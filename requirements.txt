@@ -9,6 +9,6 @@ scikit-learn>=1.4.0
 numpy>=1.26.0
 fastapi>=0.115.0
 uvicorn>=0.30.0
-passlib[bcrypt]>=1.7.4
+bcrypt>=4.0.0
 python-multipart>=0.0.9
 itsdangerous>=2.1.0

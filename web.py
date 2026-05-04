@@ -911,8 +911,8 @@ function checkSlugConfirm() {{
 
 function titleToSlug(title) {{
   return title.split(':')[0].trim().toLowerCase()
-    .replace(/[^a-z0-9\s-]/g, '').trim()
-    .replace(/\s+/g, '-').replace(/-+/g, '-')
+    .replace(/[^a-z0-9\\s-]/g, '').trim()
+    .replace(/\\s+/g, '-').replace(/-+/g, '-')
     .split('-').slice(0, 8).join('-');
 }}
 

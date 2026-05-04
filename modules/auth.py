@@ -1,5 +1,5 @@
 """
-Auth module — file-based user store with bcrypt password hashing.
+Auth module — file-based user store with direct bcrypt password hashing.
 
 Users are stored in /output/users.json (Railway persistent volume).
 Sessions use signed cookies via Starlette SessionMiddleware.
@@ -22,16 +22,32 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
-from passlib.context import CryptContext
+import bcrypt as _bcrypt
 
-
-_pwd_ctx = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 DASHBOARD_USER = os.getenv("DASHBOARD_USER", "admin")
 DASHBOARD_PASSWORD = os.getenv("DASHBOARD_PASSWORD", "")
 
 
 # ── Internal helpers ───────────────────────────────────────────────────────────
+
+def _hash_pw(password: str) -> str:
+    pw_bytes = password.encode("utf-8")[:72]
+    return _bcrypt.hashpw(pw_bytes, _bcrypt.gensalt()).decode("utf-8")
+
+
+def _verify_pw(password: str, hashed: str) -> bool:
+    try:
+        pw_bytes = password.encode("utf-8")[:72]
+        return _bcrypt.checkpw(pw_bytes, hashed.encode("utf-8"))
+    except Exception:
+        return False
+
+
+def _dummy_verify() -> None:
+    """Constant-time no-op to prevent username enumeration timing attacks."""
+    _bcrypt.checkpw(b"dummy", _bcrypt.hashpw(b"dummy", _bcrypt.gensalt()))
+
 
 def _users_path(output_dir: Path) -> Path:
     return output_dir / "users.json"
@@ -71,7 +87,7 @@ def init_users(output_dir: Path) -> None:
 
     username = DASHBOARD_USER or "admin"
     users[username] = {
-        "hash": _pwd_ctx.hash(DASHBOARD_PASSWORD),
+        "hash": _hash_pw(DASHBOARD_PASSWORD),
         "role": "admin",
         "created": datetime.now(timezone.utc).isoformat(),
     }
@@ -87,9 +103,9 @@ def verify_user(username: str, password: str, output_dir: Path) -> dict | None:
     users = _load(output_dir)
     entry = users.get(username)
     if not entry:
-        _pwd_ctx.dummy_verify()  # constant-time to prevent username enumeration
+        _dummy_verify()  # constant-time to prevent username enumeration
         return None
-    if not _pwd_ctx.verify(password, entry["hash"]):
+    if not _verify_pw(password, entry["hash"]):
         return None
     return {"username": username, "role": entry.get("role", "viewer")}
 
@@ -135,7 +151,7 @@ def create_user(username: str, password: str, role: str, output_dir: Path) -> di
         return {"success": False, "message": f"User '{username}' already exists"}
 
     users[username] = {
-        "hash": _pwd_ctx.hash(password),
+        "hash": _hash_pw(password),
         "role": role,
         "created": datetime.now(timezone.utc).isoformat(),
     }
@@ -152,7 +168,7 @@ def change_password(username: str, new_password: str, output_dir: Path) -> dict:
     if username not in users:
         return {"success": False, "message": f"User '{username}' not found"}
 
-    users[username]["hash"] = _pwd_ctx.hash(new_password)
+    users[username]["hash"] = _hash_pw(new_password)
     _save(users, output_dir)
     return {"success": True, "message": f"Password updated for '{username}'"}
 
