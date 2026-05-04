@@ -29,6 +29,15 @@ SITE_URL = os.getenv("SITE_URL", "https://rocketpros.app")
 
 SYSTEM_PROMPT_PATH = Path(__file__).parent.parent / "templates" / "system_prompt.txt"
 
+# Token budget: covers thinking + full article output.
+# 8192 was too low — adaptive thinking consumes 2-4K tokens, leaving insufficient
+# room for a complete 2500-word TypeScript article. 16000 gives ample headroom.
+MAX_TOKENS = 16000
+
+# Retry on truncation: attempt with progressively higher token budgets
+MAX_RETRIES = 3
+RETRY_TOKEN_MULTIPLIERS = [1, 1.5, 2.0]  # × MAX_TOKENS on each attempt
+
 
 def _load_system_prompt() -> str:
     with open(SYSTEM_PROMPT_PATH, "r", encoding="utf-8") as f:
@@ -81,9 +90,33 @@ def _extract_title_from_typescript(ts_code: str) -> str | None:
     return match.group(1) if match else None
 
 
+def _check_truncation(ts_code: str) -> list[str]:
+    """
+    Structural completeness check — detects truncated output before it reaches
+    the publisher. A complete Paper TypeScript file must end with '};' and
+    contain all required top-level arrays.
+    """
+    errors = []
+    stripped = ts_code.strip()
+
+    if not stripped.endswith("};"):
+        errors.append(
+            f"File does not end with '}};' — response was cut off mid-generation "
+            f"(last 60 chars: ...{stripped[-60:]!r})"
+        )
+
+    required_arrays = ["citations:", "faq:", "shopImplications:", "carrierImplications:", "sections:"]
+    for arr in required_arrays:
+        if arr not in ts_code:
+            errors.append(f"Missing required array '{arr}' — likely truncated before it was written")
+
+    return errors
+
+
 def generate_article(topic: dict) -> dict:
     """
     Generate a full Paper TypeScript object for the given topic.
+    Retries up to MAX_RETRIES times on truncation, increasing max_tokens each time.
 
     Args:
         topic: dict with keys: title, angle, audience, source_urls
@@ -94,6 +127,7 @@ def generate_article(topic: dict) -> dict:
             - slug: str
             - title: str
             - validation_errors: list[str]
+            - truncation_errors: list[str]
             - token_usage: dict
             - topic: dict
     """
@@ -151,60 +185,100 @@ CITATION STANDARD (match existing papers):
   {{ label: "Statistics Canada, Consumer Price Index — vehicle parts, maintenance and repairs (Table 18-10-0004-01).", url: "https://www150.statcan.gc.ca" }}
   Include 7–12 citations. Use: MPI portal, SGI portal, provincial legislation, IBC, Statistics Canada, I-CAR RTS, OEM1Stop.com, CCC Crash Course, Mitchell Industry Trends, CCIF, IIHS-HLDI.
 
+IMPORTANT: Write the COMPLETE article without stopping. All arrays must be fully closed.
+The file must end with exactly:   }};
+Do not stop generating until the final '}};' is written.
+
 Output ONLY the TypeScript file. No prose. No markdown fences. Start with:
 import type {{ Paper }} from "../types";"""
 
     print(f"  [article_generator] Generating article: '{topic_title}'")
 
-    full_response = ""
-    input_tokens = 0
-    output_tokens = 0
-    cache_read_tokens = 0
-    cache_write_tokens = 0
+    ts_code = ""
+    truncation_errors: list[str] = []
+    token_usage: dict = {}
 
-    with client.messages.stream(
-        model="claude-opus-4-7",
-        max_tokens=8192,
-        thinking={"type": "adaptive"},
-        system=[
-            {
-                "type": "text",
-                "text": system_prompt,
-                "cache_control": {"type": "ephemeral"},
-            }
-        ],
-        messages=[
-            {"role": "user", "content": user_message}
-        ],
-    ) as stream:
-        for text in stream.text_stream:
-            full_response += text
+    for attempt in range(1, MAX_RETRIES + 1):
+        tokens_this_attempt = int(MAX_TOKENS * RETRY_TOKEN_MULTIPLIERS[attempt - 1])
 
-        final = stream.get_final_message()
-        usage = final.usage
-        input_tokens = usage.input_tokens
-        output_tokens = usage.output_tokens
-        cache_read_tokens = getattr(usage, "cache_read_input_tokens", 0)
-        cache_write_tokens = getattr(usage, "cache_creation_input_tokens", 0)
+        if attempt > 1:
+            print(f"  [article_generator] Retry {attempt}/{MAX_RETRIES} with max_tokens={tokens_this_attempt}...")
 
-    ts_code = _extract_typescript_from_response(full_response)
+        full_response = ""
+        stop_reason = "unknown"
+
+        try:
+            with client.messages.stream(
+                model="claude-opus-4-7",
+                max_tokens=tokens_this_attempt,
+                thinking={"type": "adaptive"},
+                system=[
+                    {
+                        "type": "text",
+                        "text": system_prompt,
+                        "cache_control": {"type": "ephemeral"},
+                    }
+                ],
+                messages=[
+                    {"role": "user", "content": user_message}
+                ],
+            ) as stream:
+                for text in stream.text_stream:
+                    full_response += text
+
+                final = stream.get_final_message()
+                usage = final.usage
+                stop_reason = final.stop_reason
+
+                token_usage = {
+                    "input_tokens": usage.input_tokens,
+                    "output_tokens": usage.output_tokens,
+                    "cache_read_tokens": getattr(usage, "cache_read_input_tokens", 0),
+                    "cache_write_tokens": getattr(usage, "cache_creation_input_tokens", 0),
+                }
+
+        except Exception as e:
+            print(f"  [article_generator] ✗ API error on attempt {attempt}: {e}")
+            if attempt == MAX_RETRIES:
+                raise
+            continue
+
+        print(
+            f"  [article_generator] Attempt {attempt}: stop_reason={stop_reason!r}, "
+            f"tokens: {token_usage.get('input_tokens', 0)} in / "
+            f"{token_usage.get('output_tokens', 0)} out "
+            f"({token_usage.get('cache_read_tokens', 0)} cache read)"
+        )
+
+        # ── Truncation check ─────────────────────────────────────────────────
+        if stop_reason == "max_tokens":
+            print(f"  [article_generator] ⚠ Hit max_tokens ({tokens_this_attempt}) — response truncated.")
+            if attempt < MAX_RETRIES:
+                continue
+            else:
+                print(f"  [article_generator] ✗ All {MAX_RETRIES} attempts hit max_tokens. Keeping partial output.")
+
+        ts_code = _extract_typescript_from_response(full_response)
+        truncation_errors = _check_truncation(ts_code)
+
+        if truncation_errors:
+            print(f"  [article_generator] ⚠ Attempt {attempt}: structural truncation detected:")
+            for err in truncation_errors:
+                print(f"    - {err}")
+            if attempt < MAX_RETRIES:
+                continue
+            else:
+                print(f"  [article_generator] ✗ Could not produce complete article after {MAX_RETRIES} attempts.")
+        else:
+            print(f"  [article_generator] ✓ Article is structurally complete.")
+            break
+
     slug = _extract_slug_from_typescript(ts_code) or suggested_slug
     title = _extract_title_from_typescript(ts_code) or topic_title
-
     validation_errors = _validate_typescript_output(ts_code)
 
-    token_usage = {
-        "input_tokens": input_tokens,
-        "output_tokens": output_tokens,
-        "cache_read_tokens": cache_read_tokens,
-        "cache_write_tokens": cache_write_tokens,
-    }
-
-    print(f"  [article_generator] Done. Tokens: {input_tokens} in / {output_tokens} out "
-          f"({cache_read_tokens} cache read, {cache_write_tokens} cache write)")
-
     if validation_errors:
-        print(f"  [article_generator] Validation warnings:")
+        print(f"  [article_generator] Schema validation warnings:")
         for err in validation_errors:
             print(f"    - {err}")
 
@@ -213,6 +287,7 @@ import type {{ Paper }} from "../types";"""
         "slug": slug,
         "title": title,
         "validation_errors": validation_errors,
+        "truncation_errors": truncation_errors,
         "token_usage": token_usage,
         "topic": topic,
     }

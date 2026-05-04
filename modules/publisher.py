@@ -122,6 +122,34 @@ def _update_index_ts(current_content: str, slug: str, camel_name: str) -> str:
     return content_with_import
 
 
+def _validate_before_publish(ts_content: str, slug: str) -> list[str]:
+    """
+    Final safety check before pushing to GitHub.
+    Blocks truncated or structurally incomplete files from ever reaching Vercel.
+    """
+    errors = []
+    stripped = ts_content.strip()
+
+    if not stripped.endswith("};"):
+        errors.append(
+            f"File does not end with '}};' — response was truncated. "
+            f"Last 80 chars: ...{stripped[-80:]!r}"
+        )
+
+    required = ["citations:", "faq:", "shopImplications:", "carrierImplications:", "sections:"]
+    for arr in required:
+        if arr not in ts_content:
+            errors.append(f"Missing required field '{arr}' — file is incomplete")
+
+    if "export const" not in ts_content:
+        errors.append("Missing 'export const' declaration — invalid TypeScript")
+
+    if 'import type { Paper }' not in ts_content and "import type { Paper }" not in ts_content:
+        errors.append("Missing 'import type { Paper }' — invalid TypeScript")
+
+    return errors
+
+
 def publish_article(slug: str) -> dict:
     """
     Publish an approved article to the rprosite-main GitHub repo.
@@ -145,6 +173,19 @@ def publish_article(slug: str) -> dict:
         return {"success": False, "message": f"Article file not found: {ts_path}", "url": ""}
 
     ts_content = ts_path.read_text(encoding="utf-8")
+
+    # ── Pre-publish structural validation ──────────────────────────────────────
+    pre_errors = _validate_before_publish(ts_content, slug)
+    if pre_errors:
+        error_detail = " | ".join(pre_errors)
+        print(f"  [publisher] ✗ BLOCKED — article '{slug}' failed pre-publish validation:")
+        for err in pre_errors:
+            print(f"    - {err}")
+        return {
+            "success": False,
+            "message": f"Article blocked — structural issues detected: {error_detail}",
+            "url": "",
+        }
     camel_name = _slug_to_camel(slug)
     today = datetime.now().strftime("%Y-%m-%d")
     commit_message = f"feat: add research article '{slug}' ({today})"
