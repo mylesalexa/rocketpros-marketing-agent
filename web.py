@@ -34,27 +34,32 @@ Legacy Routes (preserved):
 import os
 import sys
 import json
-import secrets
 import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException, Depends
-from fastapi.security import HTTPBasic, HTTPBasicCredentials
-from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from fastapi import FastAPI, HTTPException, Depends, Request, Form
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse, RedirectResponse
+from starlette.middleware.sessions import SessionMiddleware
 from pydantic import BaseModel
 
 from modules.publisher import publish_article, get_pending_articles, get_linkedin_posts, delete_article, is_published
+from modules.auth import (
+    init_users, verify_user, list_users, create_user,
+    change_password, change_role, delete_user,
+)
 
-app = FastAPI(title="RocketPros Marketing Super Hub", docs_url=None, redoc_url=None)
-security = HTTPBasic()
-
-DASHBOARD_USER = os.getenv("DASHBOARD_USER", "myles")
-DASHBOARD_PASSWORD = os.getenv("DASHBOARD_PASSWORD", "")
+SESSION_SECRET = os.getenv("SESSION_SECRET", "dev-secret-change-in-production-please")
 SITE_URL = os.getenv("SITE_URL", "https://rocketpros.app")
 DRY_RUN = os.getenv("DRY_RUN", "false").lower() == "true"
 OUTPUT_DIR = Path(os.getenv("OUTPUT_DIR", "/output"))
+
+app = FastAPI(title="RocketPros Marketing Super Hub", docs_url=None, redoc_url=None)
+app.add_middleware(SessionMiddleware, secret_key=SESSION_SECRET, session_cookie="rp_session", max_age=86400 * 7)
+
+# Bootstrap users on startup
+init_users(OUTPUT_DIR)
 
 
 # ── Run state ──────────────────────────────────────────────────────────────────
@@ -114,14 +119,20 @@ class LogCapture:
 
 # ── Auth ───────────────────────────────────────────────────────────────────────
 
-def require_auth(credentials: HTTPBasicCredentials = Depends(security)):
-    if not DASHBOARD_PASSWORD:
-        raise HTTPException(status_code=500, detail="DASHBOARD_PASSWORD env var not set")
-    user_ok = secrets.compare_digest(credentials.username.encode(), DASHBOARD_USER.encode())
-    pass_ok = secrets.compare_digest(credentials.password.encode(), DASHBOARD_PASSWORD.encode())
-    if not (user_ok and pass_ok):
-        raise HTTPException(status_code=401, detail="Unauthorized",
-                            headers={"WWW-Authenticate": "Basic"})
+def require_auth(request: Request) -> dict:
+    """Dependency: returns session user dict or raises 401 redirect."""
+    user = request.session.get("user")
+    if not user:
+        raise HTTPException(status_code=307, headers={"Location": "/login"})
+    return user
+
+
+def require_admin(request: Request) -> dict:
+    """Dependency: requires admin role."""
+    user = require_auth(request)
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    return user
 
 
 # ── Pydantic models ────────────────────────────────────────────────────────────
@@ -455,11 +466,50 @@ def _draft_card_html(a: dict) -> str:
     </div>"""
 
 
+# ── Admin tab HTML ────────────────────────────────────────────────────────────
+
+def _build_admin_tab_html() -> str:
+    return """
+    <div style="max-width:700px;">
+      <div class="card">
+        <h2 style="margin-bottom:16px;color:#06b6d4;">&#x1F464; User Management</h2>
+        <div id="users-list">
+          <div class="empty"><h2><span class="spinner"></span> Loading...</h2></div>
+        </div>
+        <hr style="border-color:#2d3748;margin:20px 0;">
+        <h3 style="font-size:14px;color:#94a3b8;margin-bottom:14px;">Add New User</h3>
+        <div style="display:grid;grid-template-columns:1fr 1fr 120px;gap:10px;align-items:end;">
+          <div>
+            <label class="field-label">Username</label>
+            <input type="text" class="field-input" id="new-username" placeholder="e.g. ali" autocomplete="off">
+          </div>
+          <div>
+            <label class="field-label">Password</label>
+            <input type="password" class="field-input" id="new-password" placeholder="Strong password" autocomplete="new-password">
+          </div>
+          <div>
+            <label class="field-label">Role</label>
+            <select class="field-input" id="new-role" style="padding:8px 10px;">
+              <option value="viewer">Viewer</option>
+              <option value="admin">Admin</option>
+            </select>
+          </div>
+        </div>
+        <button onclick="addUser()" class="btn btn-primary" style="margin-top:12px;">&#x2795; Add User</button>
+        <div id="user-add-result" style="margin-top:10px;"></div>
+      </div>
+    </div>"""
+
+
 # ── Main dashboard HTML ────────────────────────────────────────────────────────
 
-def _build_dashboard_html(articles: list[dict]) -> str:
+def _build_dashboard_html(articles: list[dict], current_user: dict | None = None) -> str:
     draft_count = len(articles)
     draft_count_cls = "has-items" if draft_count > 0 else ""
+    username = (current_user or {}).get("username", "")
+    role = (current_user or {}).get("role", "viewer")
+    is_admin = role == "admin"
+    admin_tab = '<button class="tab-btn" onclick="switchTab(\'admin\', this)">&#x1F464; Users</button>' if is_admin else ""
 
     if not articles:
         drafts_content = """
@@ -469,6 +519,8 @@ def _build_dashboard_html(articles: list[dict]) -> str:
         </div>"""
     else:
         drafts_content = "".join(_draft_card_html(a) for a in articles)
+
+    admin_tab_content = _build_admin_tab_html() if is_admin else ""
 
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -486,7 +538,11 @@ def _build_dashboard_html(articles: list[dict]) -> str:
       <h1>&#x1F680; RocketPros Marketing Super Hub</h1>
       <p>{draft_count} draft(s) pending &middot; {SITE_URL}</p>
     </div>
-    <span class="badge badge-cyan">Marketing Agent</span>
+    <div style="display:flex;align-items:center;gap:12px;">
+      <span class="badge badge-cyan">Marketing Agent</span>
+      <span style="font-size:12px;color:#64748b;">&#x1F464; {_esc(username)}</span>
+      <a href="/logout" style="font-size:12px;color:#94a3b8;text-decoration:none;" title="Sign out">Sign out</a>
+    </div>
   </div>
 
   <!-- Tab nav -->
@@ -502,6 +558,7 @@ def _build_dashboard_html(articles: list[dict]) -> str:
     <button class="tab-btn" onclick="switchTab('pipeline', this)">
       Run Pipeline <span id="pipeline-dot" style="display:none;width:8px;height:8px;background:#a78bfa;border-radius:50%;display:none;margin-left:6px;"></span>
     </button>
+    {admin_tab}
   </div>
 
   <!-- TAB: Drafts -->
@@ -563,6 +620,11 @@ def _build_dashboard_html(articles: list[dict]) -> str:
         </div>
       </div>
     </div>
+  </div>
+
+  <!-- TAB: Admin Users (admin only) -->
+  <div class="tab-content" id="tab-admin">
+    {admin_tab_content}
   </div>
 
 </div><!-- end .wrap -->
@@ -753,6 +815,7 @@ function switchTab(name, btn) {{
   if (name === 'live' && !liveLoaded) loadLiveSite();
   if (name === 'linkedin' && !linkedinLoaded) loadLinkedin();
   if (name === 'analytics' && !analyticsLoaded) loadAnalytics();
+  if (name === 'admin' && !adminLoaded) loadUsers();
 }}
 
 let liveLoaded = false;
@@ -1659,6 +1722,115 @@ async function deleteLiveArticle(slug, btn) {{
   }} catch(e) {{ alert('Error: ' + e.message); btn.disabled = false; btn.textContent = '&#x1F5D1; Remove from Site'; }}
 }}
 
+// ── Admin: User Management ────────────────────────────────────────────────────
+let adminLoaded = false;
+
+async function loadUsers() {{
+  const container = document.getElementById('users-list');
+  if (!container) return;
+  try {{
+    const resp = await fetch('/api/users');
+    const data = await resp.json();
+    renderUsers(data.users || []);
+    adminLoaded = true;
+  }} catch(e) {{
+    container.innerHTML = '<div class="error-banner">Failed to load users: ' + e.message + '</div>';
+  }}
+}}
+
+function renderUsers(users) {{
+  const container = document.getElementById('users-list');
+  if (!users.length) {{
+    container.innerHTML = '<div class="info-banner">No users found.</div>';
+    return;
+  }}
+  container.innerHTML = `
+    <table class="data-table">
+      <thead><tr><th>Username</th><th>Role</th><th>Created</th><th>Actions</th></tr></thead>
+      <tbody>
+        ${{users.map(u => `
+          <tr id="user-row-${{escHtml(u.username)}}">
+            <td style="font-weight:600;">${{escHtml(u.username)}}</td>
+            <td>
+              <select onchange="changeRole('${{escHtml(u.username)}}', this.value)" style="background:#1e293b;color:#e2e8f0;border:1px solid #2d3748;padding:4px 8px;border-radius:4px;">
+                <option value="viewer" ${{u.role === 'viewer' ? 'selected' : ''}}>Viewer</option>
+                <option value="admin" ${{u.role === 'admin' ? 'selected' : ''}}>Admin</option>
+              </select>
+            </td>
+            <td style="font-size:12px;color:#64748b;">${{u.created ? new Date(u.created).toLocaleDateString() : ''}}</td>
+            <td style="display:flex;gap:6px;flex-wrap:wrap;">
+              <button class="btn btn-secondary btn-sm" onclick="promptChangePassword('${{escHtml(u.username)}}')" title="Change password">&#x1F511; Password</button>
+              <button class="btn btn-delete btn-sm" onclick="removeUser('${{escHtml(u.username)}}')" title="Delete user">&#x1F5D1;</button>
+            </td>
+          </tr>`).join('')}}
+      </tbody>
+    </table>`;
+}}
+
+async function addUser() {{
+  const username = document.getElementById('new-username').value.trim();
+  const password = document.getElementById('new-password').value;
+  const role = document.getElementById('new-role').value;
+  const resultEl = document.getElementById('user-add-result');
+  if (!username || !password) {{ resultEl.innerHTML = '<div class="error-banner">Username and password required.</div>'; return; }}
+  try {{
+    const resp = await fetch('/api/users', {{
+      method: 'POST',
+      headers: {{'Content-Type': 'application/json'}},
+      body: JSON.stringify({{username, password, role}}),
+    }});
+    const data = await resp.json();
+    if (data.success) {{
+      resultEl.innerHTML = '<div class="success-banner">' + escHtml(data.message) + '</div>';
+      document.getElementById('new-username').value = '';
+      document.getElementById('new-password').value = '';
+      loadUsers();
+    }} else {{
+      resultEl.innerHTML = '<div class="error-banner">' + escHtml(data.message) + '</div>';
+    }}
+  }} catch(e) {{ resultEl.innerHTML = '<div class="error-banner">Error: ' + e.message + '</div>'; }}
+}}
+
+async function removeUser(username) {{
+  if (!confirm('Delete user "' + username + '"? They will no longer be able to log in.')) return;
+  try {{
+    const resp = await fetch('/api/users/' + encodeURIComponent(username), {{method: 'DELETE'}});
+    const data = await resp.json();
+    if (data.success) {{
+      const row = document.getElementById('user-row-' + username);
+      if (row) row.remove();
+    }} else {{
+      alert(data.message);
+    }}
+  }} catch(e) {{ alert('Error: ' + e.message); }}
+}}
+
+async function changeRole(username, role) {{
+  try {{
+    const resp = await fetch('/api/users/' + encodeURIComponent(username) + '/role', {{
+      method: 'POST',
+      headers: {{'Content-Type': 'application/json'}},
+      body: JSON.stringify({{role}}),
+    }});
+    const data = await resp.json();
+    if (!data.success) alert(data.message);
+  }} catch(e) {{ alert('Error: ' + e.message); }}
+}}
+
+async function promptChangePassword(username) {{
+  const newPw = prompt('New password for "' + username + '":');
+  if (!newPw) return;
+  try {{
+    const resp = await fetch('/api/users/' + encodeURIComponent(username) + '/password', {{
+      method: 'POST',
+      headers: {{'Content-Type': 'application/json'}},
+      body: JSON.stringify({{password: newPw}}),
+    }});
+    const data = await resp.json();
+    alert(data.message);
+  }} catch(e) {{ alert('Error: ' + e.message); }}
+}}
+
 // ── Utilities ─────────────────────────────────────────────────────────────────
 function escHtml(t) {{
   if (!t) return '';
@@ -1675,8 +1847,7 @@ function clearEditorBanner() {{
   document.getElementById('editor-banner').innerHTML = '';
 }}
 
-// Authenticated fetch — browser sends Basic auth automatically since we're in the same session.
-// The browser caches Basic credentials after the first successful prompt.
+// Authenticated fetch — session cookie is sent automatically on same-origin requests.
 function authedFetch(url, opts) {{
   return fetch(url, opts || {{}});
 }}
@@ -1702,6 +1873,119 @@ fetch('/run/status')
 </html>"""
 
 
+# ── Login / logout ─────────────────────────────────────────────────────────────
+
+_LOGIN_HTML = """<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>RocketPros — Sign In</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: #0f1117; color: #e2e8f0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+           display: flex; align-items: center; justify-content: center; min-height: 100vh; }
+    .login-box { background: #1e293b; border: 1px solid #2d3748; border-radius: 12px;
+                  padding: 40px 36px; width: 100%; max-width: 380px; }
+    h1 { color: #06b6d4; font-size: 20px; font-weight: 700; margin-bottom: 6px; }
+    p { color: #64748b; font-size: 13px; margin-bottom: 28px; }
+    label { display: block; font-size: 12px; font-weight: 600; color: #94a3b8;
+             text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 6px; }
+    input { width: 100%; background: #0f1117; border: 1px solid #2d3748; border-radius: 6px;
+             color: #e2e8f0; padding: 10px 12px; font-size: 14px; margin-bottom: 16px; }
+    input:focus { outline: none; border-color: #06b6d4; }
+    button { width: 100%; background: #06b6d4; color: #0f1117; border: none; border-radius: 6px;
+              padding: 11px; font-size: 15px; font-weight: 700; cursor: pointer; margin-top: 4px; }
+    button:hover { background: #0891b2; }
+    .error { background: #3b1818; border: 1px solid #ef4444; border-radius: 6px;
+              padding: 10px 14px; color: #fca5a5; font-size: 13px; margin-bottom: 16px; }
+  </style>
+</head>
+<body>
+  <div class="login-box">
+    <h1>&#x1F680; RocketPros</h1>
+    <p>Marketing Super Hub — sign in to continue</p>
+    __ERROR_BLOCK__
+    <form method="post" action="/login">
+      <label for="username">Username</label>
+      <input type="text" name="username" id="username" autocomplete="username" required autofocus>
+      <label for="password">Password</label>
+      <input type="password" name="password" id="password" autocomplete="current-password" required>
+      <button type="submit">Sign In</button>
+    </form>
+  </div>
+</body>
+</html>"""
+
+
+@app.get("/login", response_class=HTMLResponse)
+def login_page(request: Request, error: str = ""):
+    if request.session.get("user"):
+        return RedirectResponse("/", status_code=303)
+    error_block = f'<div class="error">{_esc(error)}</div>' if error else ""
+    return _LOGIN_HTML.replace("__ERROR_BLOCK__", error_block)
+
+
+@app.post("/login")
+async def login_submit(request: Request, username: str = Form(...), password: str = Form(...)):
+    user = verify_user(username.strip(), password, OUTPUT_DIR)
+    if not user:
+        return RedirectResponse("/login?error=Invalid+username+or+password", status_code=303)
+    request.session["user"] = user
+    return RedirectResponse("/", status_code=303)
+
+
+@app.get("/logout")
+def logout(request: Request):
+    request.session.clear()
+    return RedirectResponse("/login", status_code=303)
+
+
+# ── User management API (admin only) ───────────────────────────────────────────
+
+class CreateUserRequest(BaseModel):
+    username: str
+    password: str
+    role: str = "viewer"
+
+
+class ChangePasswordRequest(BaseModel):
+    password: str
+
+
+class ChangeRoleRequest(BaseModel):
+    role: str
+
+
+@app.get("/api/users")
+def api_list_users(_: dict = Depends(require_admin)):
+    return JSONResponse({"users": list_users(OUTPUT_DIR)})
+
+
+@app.post("/api/users")
+def api_create_user(body: CreateUserRequest, _: dict = Depends(require_admin)):
+    result = create_user(body.username.strip(), body.password, body.role, OUTPUT_DIR)
+    return JSONResponse(result)
+
+
+@app.delete("/api/users/{username}")
+def api_delete_user(username: str, _: dict = Depends(require_admin)):
+    result = delete_user(username, OUTPUT_DIR)
+    return JSONResponse(result)
+
+
+@app.post("/api/users/{username}/password")
+def api_change_password(username: str, body: ChangePasswordRequest, _: dict = Depends(require_admin)):
+    result = change_password(username, body.password, OUTPUT_DIR)
+    return JSONResponse(result)
+
+
+@app.post("/api/users/{username}/role")
+def api_change_role(username: str, body: ChangeRoleRequest, _: dict = Depends(require_admin)):
+    result = change_role(username, body.role, OUTPUT_DIR)
+    return JSONResponse(result)
+
+
 # ── Health / pipeline routes ───────────────────────────────────────────────────
 
 @app.get("/health")
@@ -1710,12 +1994,12 @@ def health():
 
 
 @app.get("/run/status")
-def run_status(_: None = Depends(require_auth)):
+def run_status(_: dict = Depends(require_auth)):
     return JSONResponse({"running": run_state.running, "log_count": len(run_state.logs)})
 
 
 @app.post("/run")
-def force_run(body: RunRequest = RunRequest(), _: None = Depends(require_auth)):
+def force_run(body: RunRequest = RunRequest(), _: dict = Depends(require_auth)):
     if run_state.running:
         return JSONResponse({"started": False, "message": "Pipeline is already running"})
     run_state.start()
@@ -1725,7 +2009,7 @@ def force_run(body: RunRequest = RunRequest(), _: None = Depends(require_auth)):
 
 
 @app.get("/run/stream")
-async def run_stream(_: None = Depends(require_auth)):
+async def run_stream(_: dict = Depends(require_auth)):
     import asyncio
 
     async def event_generator():
@@ -1750,15 +2034,16 @@ async def run_stream(_: None = Depends(require_auth)):
 # ── Main dashboard ─────────────────────────────────────────────────────────────
 
 @app.get("/", response_class=HTMLResponse)
-def dashboard(_: None = Depends(require_auth)):
+def dashboard(request: Request, _: dict = Depends(require_auth)):
     articles = get_pending_articles()
-    return _build_dashboard_html(articles)
+    user = request.session.get("user", {})
+    return _build_dashboard_html(articles, current_user=user)
 
 
 # ── Legacy article detail (redirects to editor modal via JS) ──────────────────
 
 @app.get("/article/{slug}", response_class=HTMLResponse)
-def article_detail(slug: str, _: None = Depends(require_auth)):
+def article_detail(slug: str, _: dict = Depends(require_auth)):
     """Legacy detail page — renders minimal page that auto-opens the editor modal."""
     articles = get_pending_articles()
     article = next((a for a in articles if a["slug"] == slug), None)
@@ -1832,7 +2117,7 @@ async function publishArticle(slug, btn) {{
 # ── Image download ─────────────────────────────────────────────────────────────
 
 @app.get("/image/{slug}")
-def download_image(slug: str, _: None = Depends(require_auth)):
+def download_image(slug: str, _: dict = Depends(require_auth)):
     from fastapi.responses import FileResponse
     img_path = OUTPUT_DIR / "images" / f"{slug}.png"
     if not img_path.exists():
@@ -1848,13 +2133,13 @@ def download_image(slug: str, _: None = Depends(require_auth)):
 # ── Publish / delete ───────────────────────────────────────────────────────────
 
 @app.post("/publish/{slug}")
-def publish(slug: str, _: None = Depends(require_auth)):
+def publish(slug: str, _: dict = Depends(require_auth)):
     result = publish_article(slug)
     return JSONResponse(content=result)
 
 
 @app.delete("/article/{slug}")
-def remove_article(slug: str, remove_from_github: bool = False, _: None = Depends(require_auth)):
+def remove_article(slug: str, remove_from_github: bool = False, _: dict = Depends(require_auth)):
     result = delete_article(slug, remove_from_github=remove_from_github)
     return JSONResponse(content=result)
 
@@ -1862,7 +2147,7 @@ def remove_article(slug: str, remove_from_github: bool = False, _: None = Depend
 # ── NEW: Sync API ──────────────────────────────────────────────────────────────
 
 @app.get("/api/sync")
-def api_sync(force: bool = False, _: None = Depends(require_auth)):
+def api_sync(force: bool = False, _: dict = Depends(require_auth)):
     """Trigger a GitHub sync and return results (respects TTL unless force=True)."""
     from modules.site_syncer import sync_live_articles
     result = sync_live_articles(OUTPUT_DIR, force=force)
@@ -1870,7 +2155,7 @@ def api_sync(force: bool = False, _: None = Depends(require_auth)):
 
 
 @app.get("/api/site-articles")
-def api_site_articles(_: None = Depends(require_auth)):
+def api_site_articles(_: dict = Depends(require_auth)):
     """Return cached live site articles as JSON for the Live Site tab."""
     from modules.site_syncer import get_live_articles
     articles = get_live_articles(OUTPUT_DIR)
@@ -1878,7 +2163,7 @@ def api_site_articles(_: None = Depends(require_auth)):
 
 
 @app.post("/api/sync/pull/{slug}")
-def api_sync_pull(slug: str, overwrite: bool = False, _: None = Depends(require_auth)):
+def api_sync_pull(slug: str, overwrite: bool = False, _: dict = Depends(require_auth)):
     """Copy a live article from the GitHub cache into output/articles/ for editing."""
     from modules.site_syncer import pull_live_article_for_edit
     result = pull_live_article_for_edit(slug, OUTPUT_DIR, overwrite=overwrite)
@@ -1888,7 +2173,7 @@ def api_sync_pull(slug: str, overwrite: bool = False, _: None = Depends(require_
 # ── NEW: Article preview / edit / rename ──────────────────────────────────────
 
 @app.get("/api/article/{slug}/preview")
-def api_article_preview(slug: str, source: str = "local", _: None = Depends(require_auth)):
+def api_article_preview(slug: str, source: str = "local", _: dict = Depends(require_auth)):
     """
     Return a parsed paper dict for the editor modal.
     source='local'  → reads from output/articles/{slug}.ts
@@ -1921,7 +2206,7 @@ def api_article_preview(slug: str, source: str = "local", _: None = Depends(requ
 
 
 @app.post("/api/article/{slug}/edit")
-def api_article_edit(slug: str, body: ArticleEditRequest, _: None = Depends(require_auth)):
+def api_article_edit(slug: str, body: ArticleEditRequest, _: dict = Depends(require_auth)):
     """
     Save an edited article. Two modes:
     - body.paper provided: serialize dict → TS, validate, write file
@@ -1959,7 +2244,7 @@ def api_article_edit(slug: str, body: ArticleEditRequest, _: None = Depends(requ
 
 
 @app.post("/api/article/{slug}/rename")
-def api_article_rename(slug: str, body: RenameRequest, _: None = Depends(require_auth)):
+def api_article_rename(slug: str, body: RenameRequest, _: dict = Depends(require_auth)):
     """Rename an article's slug + title + all associated files."""
     from modules.article_editor import rename_article
     result = rename_article(slug, body.new_title, OUTPUT_DIR)
@@ -1967,7 +2252,7 @@ def api_article_rename(slug: str, body: RenameRequest, _: None = Depends(require
 
 
 @app.post("/api/article/{slug}/regenerate-linkedin")
-def api_regenerate_linkedin(slug: str, _: None = Depends(require_auth)):
+def api_regenerate_linkedin(slug: str, _: dict = Depends(require_auth)):
     """Regenerate LinkedIn posts for an article using the existing linkedin_generator."""
     from modules.linkedin_generator import generate_linkedin_posts, save_linkedin_posts
 
@@ -1995,7 +2280,7 @@ def api_regenerate_linkedin(slug: str, _: None = Depends(require_auth)):
 # ── NEW: LinkedIn Hub API ──────────────────────────────────────────────────────
 
 @app.get("/api/linkedin-hub")
-def api_linkedin_hub(_: None = Depends(require_auth)):
+def api_linkedin_hub(_: dict = Depends(require_auth)):
     """Return all LinkedIn posts for all local articles."""
     articles = get_pending_articles()
     result = []
@@ -2014,7 +2299,7 @@ def api_linkedin_hub(_: None = Depends(require_auth)):
 # ── NEW: Stats API ─────────────────────────────────────────────────────────────
 
 @app.get("/api/stats")
-def api_stats(_: None = Depends(require_auth)):
+def api_stats(_: dict = Depends(require_auth)):
     """Return pipeline + publication statistics."""
     published = _load_published()
     last_run = _load_last_run()
