@@ -29,7 +29,7 @@ GITHUB_BRANCH = os.getenv("GITHUB_BRANCH", "main")
 
 GITHUB_API = "https://api.github.com"
 
-OUTPUT_DIR = Path(__file__).parent.parent / "output"
+OUTPUT_DIR = Path(os.getenv("OUTPUT_DIR", "/output"))
 PUBLISHED_REGISTRY = OUTPUT_DIR / "published.json"
 
 

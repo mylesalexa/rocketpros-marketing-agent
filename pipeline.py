@@ -28,7 +28,7 @@ from modules.email_digest import send_digest
 from modules.deduplicator import add_paper_to_known
 
 
-OUTPUT_DIR = Path(__file__).parent / "output"
+OUTPUT_DIR = Path(os.getenv("OUTPUT_DIR", "/output"))
 ARTICLES_PER_RUN = int(os.getenv("ARTICLES_PER_RUN", "2"))
 DRY_RUN = os.getenv("DRY_RUN", "false").lower() == "true"
 

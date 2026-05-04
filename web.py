@@ -33,7 +33,7 @@ DASHBOARD_USER = os.getenv("DASHBOARD_USER", "myles")
 DASHBOARD_PASSWORD = os.getenv("DASHBOARD_PASSWORD", "")
 SITE_URL = os.getenv("SITE_URL", "https://rocketpros.app")
 DRY_RUN = os.getenv("DRY_RUN", "false").lower() == "true"
-OUTPUT_DIR = Path(__file__).parent / "output"
+OUTPUT_DIR = Path(os.getenv("OUTPUT_DIR", "/output"))
 
 
 # ── Run state — shared between pipeline thread and SSE stream ──────────────────
