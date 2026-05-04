@@ -304,12 +304,28 @@ def dashboard(_: None = Depends(require_auth)):
         for a in articles:
             img_badge = '<span class="badge badge-cyan">Image ✓</span>' if a["has_image"] else '<span class="badge badge-gray">No image</span>'
             li_badge = '<span class="badge badge-violet">LinkedIn ✓</span>' if a["has_linkedin"] else '<span class="badge badge-gray">No LinkedIn</span>'
+
+            # Hero image block — thumbnail + download link
+            if a["has_image"]:
+                image_block = f"""
+              <div style="margin-bottom:16px;">
+                <img src="/image/{a['slug']}" alt="Hero image"
+                     style="width:100%;border-radius:6px;border:1px solid #2d3748;display:block;margin-bottom:8px;">
+                <a href="/image/{a['slug']}" download="{a['slug']}.png"
+                   class="btn btn-secondary" style="font-size:12px;padding:6px 14px;">
+                  ⬇ Download Image (LinkedIn)
+                </a>
+              </div>"""
+            else:
+                image_block = ""
+
             cards += f"""
             <div class="card">
               <div class="icons">{img_badge} {li_badge}</div>
               <h2>{a['title']}</h2>
               <div class="meta">{a['slug']} &middot; {a['read_time']} &middot; Generated {a['modified']}</div>
               <div class="abstract">{a['abstract']}</div>
+              {image_block}
               <div class="actions">
                 <a href="/article/{a['slug']}" class="btn btn-secondary">Preview &rarr;</a>
                 <button onclick="publishArticle('{a['slug']}', this)" class="btn btn-publish">
@@ -555,7 +571,10 @@ def article_detail(slug: str, _: None = Depends(require_auth)):
     <a href="{SITE_URL}/research/{slug}" target="_blank" class="btn btn-secondary">
       Preview Live URL &rarr;
     </a>
+    {'<a href="/image/' + slug + '" download="' + slug + '.png" class="btn btn-secondary">⬇ Download Image</a>' if article["has_image"] else ''}
   </div>
+
+  {'<img src="/image/' + slug + '" alt="Hero image" style="width:100%;border-radius:8px;border:1px solid #2d3748;margin-bottom:24px;">' if article["has_image"] else ''}
 
   {'<div class="section-label">LinkedIn Posts</div>' + linkedin_html if linkedin_html else ''}
 
@@ -590,6 +609,21 @@ async function publishArticle(slug, btn) {{
 </body>
 </html>"""
     return html
+
+
+@app.get("/image/{slug}")
+def download_image(slug: str, _: None = Depends(require_auth)):
+    """Serve the hero image as a downloadable PNG."""
+    from fastapi.responses import FileResponse
+    img_path = OUTPUT_DIR / "images" / f"{slug}.png"
+    if not img_path.exists():
+        raise HTTPException(status_code=404, detail="Image not found")
+    return FileResponse(
+        path=str(img_path),
+        media_type="image/png",
+        filename=f"{slug}.png",
+        headers={"Content-Disposition": f'attachment; filename="{slug}.png"'},
+    )
 
 
 @app.post("/publish/{slug}")
