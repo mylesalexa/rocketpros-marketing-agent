@@ -83,7 +83,7 @@ def main():
         misfire_grace_time=3600,  # Allow up to 1 hour late start
     )
 
-    log.info(f"Scheduler started. Next run: {scheduler.get_jobs()[0].next_run_time}")
+    log.info(f"Scheduler started. Waiting for next run at {CRON_HOUR:02d}:{CRON_MINUTE:02d} UTC daily.")
 
     try:
         scheduler.start()
