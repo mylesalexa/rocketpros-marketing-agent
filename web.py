@@ -10,13 +10,33 @@ Routes:
 """
 
 import os
+import secrets
 from pathlib import Path
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Depends
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.responses import HTMLResponse, JSONResponse
 
 from modules.publisher import publish_article, get_pending_articles, get_linkedin_posts
 
 app = FastAPI(title="RocketPros Marketing Agent", docs_url=None, redoc_url=None)
+security = HTTPBasic()
+
+DASHBOARD_USER = os.getenv("DASHBOARD_USER", "myles")
+DASHBOARD_PASSWORD = os.getenv("DASHBOARD_PASSWORD", "")
+
+
+def require_auth(credentials: HTTPBasicCredentials = Depends(security)):
+    """Enforce HTTP Basic Auth on all dashboard routes."""
+    if not DASHBOARD_PASSWORD:
+        raise HTTPException(status_code=500, detail="DASHBOARD_PASSWORD env var not set")
+    user_ok = secrets.compare_digest(credentials.username.encode(), DASHBOARD_USER.encode())
+    pass_ok = secrets.compare_digest(credentials.password.encode(), DASHBOARD_PASSWORD.encode())
+    if not (user_ok and pass_ok):
+        raise HTTPException(
+            status_code=401,
+            detail="Unauthorized",
+            headers={"WWW-Authenticate": "Basic"},
+        )
 
 SITE_URL = os.getenv("SITE_URL", "https://rocketpros.app")
 OUTPUT_DIR = Path(__file__).parent / "output"
@@ -82,7 +102,7 @@ def health():
 
 
 @app.get("/", response_class=HTMLResponse)
-def dashboard():
+def dashboard(_: None = Depends(require_auth)):
     articles = get_pending_articles()
 
     if not articles:
@@ -162,7 +182,7 @@ async function publishArticle(slug, btn) {{
 
 
 @app.get("/article/{slug}", response_class=HTMLResponse)
-def article_detail(slug: str):
+def article_detail(slug: str, _: None = Depends(require_auth)):
     articles = get_pending_articles()
     article = next((a for a in articles if a["slug"] == slug), None)
     if not article:
@@ -247,6 +267,6 @@ async function publishArticle(slug, btn) {{
 
 
 @app.post("/publish/{slug}")
-def publish(slug: str):
+def publish(slug: str, _: None = Depends(require_auth)):
     result = publish_article(slug)
     return JSONResponse(content=result)
