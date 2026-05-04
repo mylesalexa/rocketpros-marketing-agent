@@ -1867,7 +1867,8 @@ fetch('/run/status')
         switchTab('pipeline', document.querySelectorAll('.tab-btn')[4]);
       }}
     }}
-  }});
+  }})
+  .catch(() => {{}});  // ignore — user may not be logged in yet
 </script>
 </body>
 </html>"""
