@@ -33,18 +33,26 @@ ARTICLES_PER_RUN = int(os.getenv("ARTICLES_PER_RUN", "2"))
 DRY_RUN = os.getenv("DRY_RUN", "false").lower() == "true"
 
 
-def run_pipeline(dry_run: bool = False) -> dict:
+def run_pipeline(dry_run: bool = False, direction: str = "") -> dict:
     """
     Execute the full daily pipeline.
+
+    Args:
+        dry_run: If True, skips email send and known_papers update.
+        direction: Optional topic direction from the dashboard. If provided,
+                   the researcher focuses on this specific subject instead of
+                   picking random topics autonomously.
 
     Returns a summary dict with run statistics.
     """
     start_time = datetime.now()
     print(f"\n{'='*60}")
-    print(f"RocketPros Marketing Agent — Daily Run")
+    print(f"RocketPros Marketing Agent — {'Directed' if direction else 'Autonomous'} Run")
     print(f"Started: {start_time.strftime('%Y-%m-%d %H:%M:%S CT')}")
     print(f"Mode: {'DRY RUN' if dry_run else 'LIVE'}")
     print(f"Articles to generate: {ARTICLES_PER_RUN}")
+    if direction:
+        print(f"Direction: {direction}")
     print(f"{'='*60}\n")
 
     results = {
@@ -58,7 +66,7 @@ def run_pipeline(dry_run: bool = False) -> dict:
     # ─── Step 1: Topic Discovery ────────────────────────────────────────────────
     print("STEP 1: Topic Discovery")
     try:
-        topics = discover_topics(n_topics=ARTICLES_PER_RUN + 2)  # Extra buffer for failures
+        topics = discover_topics(n_topics=ARTICLES_PER_RUN + 2, direction=direction)  # Extra buffer for failures
         if not topics:
             raise RuntimeError("No topics discovered — check Brave Search API key and quota")
         print(f"  Discovered {len(topics)} topics:")

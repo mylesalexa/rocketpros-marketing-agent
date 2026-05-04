@@ -85,7 +85,7 @@ def _brave_search(query: str, count: int = 5) -> list[dict]:
         return []
 
 
-def _build_topic_pitch(query: str, results: list[dict]) -> dict | None:
+def _build_topic_pitch(query: str, results: list[dict], direction: str = "") -> dict | None:
     """
     Convert a query + search results into a structured topic pitch.
     Returns None if the results are too thin to generate a pitch.
@@ -107,13 +107,18 @@ def _build_topic_pitch(query: str, results: list[dict]) -> dict | None:
     # Extract source URLs for potential citations
     source_urls = [r["url"] for r in results if r.get("url")]
 
+    # Build angle — incorporate direction if provided
+    angle_prefix = f"Directed focus: {direction}. " if direction else ""
+    angle = f"{angle_prefix}Data-driven analysis for Canadian shops and insurers: {descriptions[:200]}"
+
     return {
         "query": query,
-        "title": _improve_title(query),
-        "angle": f"Data-driven analysis for Canadian shops and insurers: {descriptions[:200]}",
+        "title": _improve_title(direction if direction else query),
+        "angle": angle,
         "audience": audience,
         "source_urls": source_urls[:5],
         "top_result_title": top_title,
+        "direction": direction,
     }
 
 
@@ -133,10 +138,13 @@ def _improve_title(query: str) -> str:
     return title
 
 
-def discover_topics(n_topics: int = 5) -> list[dict]:
+def discover_topics(n_topics: int = 5, direction: str = "") -> list[dict]:
     """
-    Run Brave Search on a random subset of TOPIC_CATEGORIES and return
-    n_topics unique, non-duplicate topic pitches ranked by relevance.
+    Run Brave Search and return n_topics unique, deduplicated topic pitches.
+
+    If `direction` is provided, it is used as the primary search focus —
+    the agent searches specifically for that topic and builds articles around it.
+    If blank, a random subset of TOPIC_CATEGORIES is used (autonomous mode).
 
     Each returned topic dict has:
         - title: str
@@ -144,10 +152,18 @@ def discover_topics(n_topics: int = 5) -> list[dict]:
         - audience: str
         - query: str
         - source_urls: list[str]
+        - direction: str  (original direction hint, passed through to article generator)
     """
-    print(f"[researcher] Discovering topics via Brave Search ({QUERIES_PER_RUN} queries)...")
+    if direction.strip():
+        return _discover_from_direction(direction.strip(), n_topics)
+    else:
+        return _discover_autonomous(n_topics)
 
-    # Pick a random subset of categories to query this run
+
+def _discover_autonomous(n_topics: int) -> list[dict]:
+    """Autonomous mode: random subset of TOPIC_CATEGORIES."""
+    print(f"[researcher] Autonomous mode — discovering via Brave Search ({QUERIES_PER_RUN} queries)...")
+
     queries = random.sample(TOPIC_CATEGORIES, min(QUERIES_PER_RUN, len(TOPIC_CATEGORIES)))
 
     raw_topics = []
@@ -161,6 +177,41 @@ def discover_topics(n_topics: int = 5) -> list[dict]:
     print(f"[researcher] Got {len(raw_topics)} raw topics, running deduplication...")
     unique_topics = filter_topics(raw_topics)
     print(f"[researcher] {len(unique_topics)} unique topics after dedup")
+    return unique_topics[:n_topics]
 
-    # Return top N (already in random order from sample, so just slice)
+
+def _discover_from_direction(direction: str, n_topics: int) -> list[dict]:
+    """
+    Directed mode: search specifically for the user-provided direction,
+    then expand with 1–2 closely related queries to fill out n_topics.
+    """
+    print(f"[researcher] Directed mode — focus: '{direction}'")
+
+    # Build 2–3 targeted queries from the direction
+    # Primary: exact direction; Secondary: Canada/MPI/SGI context added
+    queries = [
+        direction,
+        f"{direction} MPI SGI Canada collision repair",
+        f"{direction} Canadian auto insurance accredited shop 2026",
+    ][:max(2, n_topics + 1)]
+
+    raw_topics = []
+    for query in queries:
+        print(f"  Searching: {query}")
+        results = _brave_search(query, count=8)  # More results for directed queries
+        pitch = _build_topic_pitch(query, results, direction=direction)
+        if pitch:
+            raw_topics.append(pitch)
+
+    print(f"[researcher] Got {len(raw_topics)} raw topics, running deduplication...")
+    unique_topics = filter_topics(raw_topics)
+    print(f"[researcher] {len(unique_topics)} unique topics after dedup")
+
+    if not unique_topics:
+        # If dedup filtered everything (topic already covered), still allow it with a warning
+        print(f"[researcher] ⚠ All topics filtered by dedup — allowing directed topic through anyway")
+        if raw_topics:
+            raw_topics[0]["direction"] = direction
+            unique_topics = raw_topics[:1]
+
     return unique_topics[:n_topics]

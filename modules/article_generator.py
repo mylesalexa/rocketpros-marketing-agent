@@ -143,10 +143,16 @@ def generate_article(topic: dict) -> dict:
     suggested_slug = _generate_slug(topic_title)
     camel_slug = _slug_to_camel(suggested_slug)
 
+    direction = topic.get("direction", "").strip()
+
     source_context = ""
     if source_urls:
         source_context = "\n\nResearch sources found during topic discovery (reference for citations where relevant):\n"
         source_context += "\n".join(f"- {url}" for url in source_urls[:5])
+
+    direction_context = ""
+    if direction:
+        direction_context = f"\n\nSPECIFIC DIRECTION FROM EDITOR: {direction}\nThis is the specific angle, focus, or subject the article must cover. Follow this direction precisely — use it to determine the article's thesis, which sections to emphasize, and which OEM/program/carrier details to research and include."
 
     user_message = f"""Generate a complete RocketPros research article as a TypeScript Paper object.
 
@@ -156,7 +162,7 @@ PRIMARY AUDIENCE: {topic_audience}
 PUBLISHED DATE: {today}
 SUGGESTED SLUG: {suggested_slug}
 CAMELCASE EXPORT NAME: {camel_slug}
-SITE URL: {SITE_URL}{source_context}
+SITE URL: {SITE_URL}{direction_context}{source_context}
 
 CRITICAL SCHEMA REQUIREMENTS — match types.ts exactly:
 - Author fields: {{ name: "...", title: "Co-founder, RocketPros" }}  ← "title" NOT "role"

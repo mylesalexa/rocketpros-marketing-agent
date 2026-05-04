@@ -22,6 +22,7 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from pydantic import BaseModel
 
 from modules.publisher import publish_article, get_pending_articles, get_linkedin_posts
 
@@ -63,6 +64,12 @@ class RunState:
 
 
 run_state = RunState()
+
+
+# ── Run request body ───────────────────────────────────────────────────────────
+
+class RunRequest(BaseModel):
+    direction: str = ""
 
 
 # ── Stdout capture — pipes print() calls into run_state ───────────────────────
@@ -176,7 +183,7 @@ pre { background: #0a0d16; border: 1px solid #2d3748; border-radius: 8px; paddin
 .console-status.error { background: #450a0a; color: #fca5a5; }
 @keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:.5; } }
 .console-body { font-family: 'Courier New', monospace; font-size: 11px; line-height: 1.6;
-                color: #94a3b8; padding: 14px 18px; height: 520px; overflow-y: auto;
+                color: #94a3b8; padding: 14px 18px; height: 420px; overflow-y: auto;
                 background: #0a0d16; }
 .console-body .log-line { margin-bottom: 2px; }
 .console-body .log-ts { color: #374151; margin-right: 6px; }
@@ -186,21 +193,32 @@ pre { background: #0a0d16; border: 1px solid #2d3748; border-radius: 8px; paddin
 .console-body .log-text.step { color: #f59e0b; font-weight: 700; }
 .console-empty { color: #374151; font-style: italic; }
 .console-footer { padding: 14px 18px; border-top: 1px solid #2d3748; }
+.direction-wrap { margin-bottom: 12px; }
+.direction-label { font-size: 11px; font-weight: 700; text-transform: uppercase;
+                   letter-spacing: .08em; color: #64748b; margin-bottom: 6px; display: block; }
+.direction-hint { font-size: 11px; color: #374151; margin-top: 4px; }
+textarea.direction-input { width: 100%; background: #0a0d16; border: 1px solid #374151;
+  border-radius: 6px; color: #e2e8f0; font-size: 12px; padding: 10px 12px;
+  resize: vertical; min-height: 72px; font-family: inherit; line-height: 1.5;
+  transition: border-color .15s; }
+textarea.direction-input:focus { outline: none; border-color: #7c3aed; }
+textarea.direction-input::placeholder { color: #374151; }
 """
 
 
 # ── Pipeline runner ────────────────────────────────────────────────────────────
 
-def _run_pipeline_thread():
+def _run_pipeline_thread(direction: str = ""):
     """Runs in a background thread. Captures all stdout into run_state."""
     original_stdout = sys.stdout
     capture = LogCapture(run_state, original_stdout)
     sys.stdout = capture
 
     try:
-        run_state.append("=== Pipeline started ===")
+        mode = f"Directed: '{direction}'" if direction else "Autonomous"
+        run_state.append(f"=== Pipeline started — {mode} ===")
         from pipeline import run_pipeline
-        summary = run_pipeline(dry_run=DRY_RUN)
+        summary = run_pipeline(dry_run=DRY_RUN, direction=direction)
 
         errors = summary.get("errors", [])
         succeeded = summary.get("articles_succeeded", 0)
@@ -227,13 +245,14 @@ def run_status(_: None = Depends(require_auth)):
 
 
 @app.post("/run")
-def force_run(_: None = Depends(require_auth)):
+def force_run(body: RunRequest = RunRequest(), _: None = Depends(require_auth)):
     if run_state.running:
         return JSONResponse({"started": False, "message": "Pipeline is already running"})
     run_state.start()
-    t = threading.Thread(target=_run_pipeline_thread, daemon=True)
+    direction = body.direction.strip()
+    t = threading.Thread(target=_run_pipeline_thread, kwargs={"direction": direction}, daemon=True)
     t.start()
-    return JSONResponse({"started": True, "message": "Pipeline started"})
+    return JSONResponse({"started": True, "message": "Pipeline started", "direction": direction})
 
 
 @app.get("/run/stream")
@@ -338,6 +357,12 @@ def dashboard(_: None = Depends(require_auth)):
           <span class="console-empty">Run the pipeline to see live output here.</span>
         </div>
         <div class="console-footer">
+          <div class="direction-wrap">
+            <label class="direction-label" for="direction-input">Article direction (optional)</label>
+            <textarea id="direction-input" class="direction-input"
+              placeholder="e.g. 'How MPI handles ADAS calibration on hail claims' or 'OEM sectioning rules for high-strength steel on SGI repairs' — leave blank for autonomous topic selection"></textarea>
+            <div class="direction-hint">Leave blank → agent picks topics autonomously</div>
+          </div>
           <button id="run-btn" onclick="forceRun(this)" class="btn btn-run" style="width:100%">
             ⚡ Force Run Pipeline
           </button>
@@ -353,8 +378,12 @@ let es = null;
 function forceRun(btn) {{
   if (btn.disabled) return;
   btn.disabled = true;
-  btn.textContent = '⏳ Running...';
   btn.classList.add('running');
+
+  const directionEl = document.getElementById('direction-input');
+  const direction = directionEl ? directionEl.value.trim() : '';
+
+  btn.textContent = direction ? '⏳ Running (directed)...' : '⏳ Running...';
 
   const body = document.getElementById('console-body');
   const status = document.getElementById('console-status');
@@ -362,8 +391,16 @@ function forceRun(btn) {{
   status.className = 'console-status running';
   status.textContent = 'Running';
 
+  if (direction) {{
+    appendLog('Direction: ' + direction);
+  }}
+
   // Start the pipeline
-  fetch('/run', {{ method: 'POST' }})
+  fetch('/run', {{
+    method: 'POST',
+    headers: {{ 'Content-Type': 'application/json' }},
+    body: JSON.stringify({{ direction: direction }}),
+  }})
     .then(r => r.json())
     .then(data => {{
       if (!data.started && data.message.includes('already')) {{
