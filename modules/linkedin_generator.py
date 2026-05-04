@@ -141,29 +141,46 @@ def generate_linkedin_posts(article: dict) -> dict:
 def _extract_field(ts_code: str, field: str) -> str:
     """Simple regex extraction of a string field from TypeScript."""
     import re
-    pattern = rf'{field}:\s*["`]([^"`]+)["`]'
+    # Try double-quoted string
+    pattern = rf'{field}:\s*"([^"]+)"'
     match = re.search(pattern, ts_code, re.DOTALL)
     if match:
         return match.group(1).replace("\\n", " ").strip()
-    # Try template literal
-    pattern2 = rf'{field}:\s*`([^`]+)`'
+    # Try single-quoted string
+    pattern2 = rf"{field}:\s*'([^']+)'"
     match2 = re.search(pattern2, ts_code, re.DOTALL)
     if match2:
-        return match2.group(1).replace("\n", " ").strip()
+        return match2.group(1).replace("\\n", " ").strip()
+    # Try template literal
+    pattern3 = rf'{field}:\s*`([^`]+)`'
+    match3 = re.search(pattern3, ts_code, re.DOTALL)
+    if match3:
+        return match3.group(1).replace("\n", " ").strip()
     return ""
 
 
 def _extract_array_field(ts_code: str, field: str) -> list[str]:
     """Extract string array items from TypeScript source."""
     import re
-    # Find the array block
-    pattern = rf'{field}:\s*\[(.*?)\]'
-    match = re.search(pattern, ts_code, re.DOTALL)
+    # Find the array block — handle nested brackets
+    pattern = rf'{field}:\s*\['
+    match = re.search(pattern, ts_code)
     if not match:
         return []
-    block = match.group(1)
-    # Extract quoted strings
-    items = re.findall(r'["`]([^"`]{10,})["`]', block)
+    start = match.end()
+    depth = 1
+    i = start
+    while i < len(ts_code) and depth > 0:
+        if ts_code[i] == '[':
+            depth += 1
+        elif ts_code[i] == ']':
+            depth -= 1
+        i += 1
+    block = ts_code[start:i - 1]
+    # Extract quoted strings of reasonable length
+    items = re.findall(r'"([^"]{15,})"', block)
+    if not items:
+        items = re.findall(r"'([^']{15,})'", block)
     return items
 
 
