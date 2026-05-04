@@ -449,7 +449,7 @@ def _draft_card_html(a: dict) -> str:
         <button onclick="openEditor('{a['slug']}', 'local')" class="btn btn-edit">&#x270F; Edit</button>
         {publish_btn}
         {live_link}
-        <button onclick="deleteArticle('{a['slug']}', this)" class="btn btn-delete btn-sm" title="Delete from dashboard">&#x1F5D1; Delete</button>
+        <button onclick="deleteArticle('{a['slug']}', this, {str(a['is_published']).lower()})" class="btn btn-delete btn-sm" title="Delete from dashboard">&#x1F5D1; Delete</button>
       </div>
       <div id="result-{a['slug']}" style="margin-top:10px;"></div>
     </div>"""
@@ -1341,6 +1341,7 @@ function renderLiveArticles(articles) {{
       <div class="actions">
         <a href="${{escHtml(a.site_url)}}" target="_blank" class="btn btn-secondary">View Live &rarr;</a>
         <button onclick="pullForEdit('${{a.slug}}')" class="btn btn-edit">&#x2B07; Pull for Edit</button>
+        <button onclick="deleteLiveArticle('${{a.slug}}', this)" class="btn btn-delete btn-sm" title="Remove from live website">&#x1F5D1; Remove from Site</button>
       </div>
       <div id="pull-result-${{a.slug}}" style="margin-top:8px;"></div>
     </div>`).join('');
@@ -1602,17 +1603,60 @@ async function publishArticle(slug, btn) {{
   }}
 }}
 
-async function deleteArticle(slug, btn) {{
-  if (!confirm('Delete "' + slug + '" from drafts? This removes local files but does NOT unpublish from the website.')) return;
+async function deleteArticle(slug, btn, isPublished) {{
+  let removeFromGithub = false;
+  if (isPublished) {{
+    const choice = confirm(
+      'DELETE "' + slug + '"\n\n' +
+      'This article is LIVE on the website.\n\n' +
+      'Click OK to delete from BOTH the dashboard AND the live site (removes from rocketpros.app and triggers a Vercel redeploy).\n\n' +
+      'Click Cancel to abort.'
+    );
+    if (!choice) return;
+    removeFromGithub = true;
+  }} else {{
+    if (!confirm('Delete "' + slug + '" from drafts? This removes local files only.')) return;
+  }}
   btn.disabled = true; btn.textContent = 'Deleting...';
   try {{
-    const resp = await authedFetch('/article/' + slug, {{method: 'DELETE'}});
+    const url = '/article/' + slug + (removeFromGithub ? '?remove_from_github=true' : '');
+    const resp = await authedFetch(url, {{method: 'DELETE'}});
     const data = await resp.json();
     if (data.success) {{
       const card = document.getElementById('card-' + slug);
       if (card) {{ card.style.opacity = '0'; card.style.transition = 'opacity .3s'; setTimeout(() => card.remove(), 300); }}
+      if (removeFromGithub) {{
+        const gh = data.github || {{}};
+        alert('Deleted from dashboard and GitHub.\n' + (gh.message || 'Vercel redeploy triggered — page will go offline in ~60 seconds.'));
+      }}
     }} else {{ alert('Delete failed: ' + data.message); btn.disabled = false; btn.textContent = '&#x1F5D1; Delete'; }}
   }} catch(e) {{ alert('Error: ' + e.message); btn.disabled = false; btn.textContent = '&#x1F5D1; Delete'; }}
+}}
+
+async function deleteLiveArticle(slug, btn) {{
+  const confirmed = confirm(
+    'REMOVE "' + slug + '" FROM LIVE SITE\n\n' +
+    'This will:\n' +
+    '  - Delete the article TypeScript file from GitHub\n' +
+    '  - Delete the hero image from GitHub\n' +
+    '  - Remove it from the research index\n' +
+    '  - Trigger a Vercel redeploy (page offline in ~60s)\n\n' +
+    'This cannot be undone without re-publishing. Continue?'
+  );
+  if (!confirmed) return;
+  btn.disabled = true; btn.textContent = 'Removing...';
+  try {{
+    const resp = await authedFetch('/article/' + slug + '?remove_from_github=true', {{method: 'DELETE'}});
+    const data = await resp.json();
+    if (data.success) {{
+      const card = btn.closest('.card');
+      if (card) {{ card.style.opacity = '0'; card.style.transition = 'opacity .3s'; setTimeout(() => card.remove(), 300); }}
+      alert('Removed from live site. Vercel is redeploying — the page will go offline in ~60 seconds.');
+    }} else {{
+      alert('Remove failed: ' + data.message);
+      btn.disabled = false; btn.textContent = '&#x1F5D1; Remove from Site';
+    }}
+  }} catch(e) {{ alert('Error: ' + e.message); btn.disabled = false; btn.textContent = '&#x1F5D1; Remove from Site'; }}
 }}
 
 // ── Utilities ─────────────────────────────────────────────────────────────────
@@ -1810,8 +1854,8 @@ def publish(slug: str, _: None = Depends(require_auth)):
 
 
 @app.delete("/article/{slug}")
-def remove_article(slug: str, _: None = Depends(require_auth)):
-    result = delete_article(slug)
+def remove_article(slug: str, remove_from_github: bool = False, _: None = Depends(require_auth)):
+    result = delete_article(slug, remove_from_github=remove_from_github)
     return JSONResponse(content=result)
 
 

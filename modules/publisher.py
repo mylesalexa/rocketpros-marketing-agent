@@ -60,11 +60,15 @@ def is_published(slug: str) -> bool:
     return slug in _load_published()
 
 
-def delete_article(slug: str) -> dict:
+def delete_article(slug: str, remove_from_github: bool = False) -> dict:
     """
     Delete all local output files for an article (ts, image, linkedin).
     Also removes from published registry if present.
-    Does NOT touch GitHub — only local output files.
+
+    If remove_from_github=True, also deletes the files from GitHub and removes
+    the entry from index.ts, triggering a Vercel redeploy that takes the page
+    offline. Works even if the article isn't in the local published registry
+    (e.g., deleting directly from the Live Site tab).
     """
     deleted = []
     for path in [
@@ -78,12 +82,22 @@ def delete_article(slug: str) -> dict:
 
     # Remove from published registry
     registry = _load_published()
-    if slug in registry:
+    was_published = slug in registry
+    if was_published:
         del registry[slug]
         _save_published(registry)
 
-    if deleted:
-        return {"success": True, "message": f"Deleted: {', '.join(deleted)}"}
+    github_result = None
+    if remove_from_github:
+        github_result = _delete_article_from_github(slug)
+
+    local_msg = f"Deleted local files: {', '.join(deleted)}" if deleted else f"No local files found for '{slug}'"
+    if github_result:
+        combined = f"{local_msg} | GitHub: {github_result['message']}"
+        return {"success": True, "message": combined, "github": github_result}
+
+    if deleted or was_published:
+        return {"success": True, "message": local_msg}
     return {"success": False, "message": f"No files found for slug '{slug}'"}
 
 
@@ -131,6 +145,87 @@ def _put_file(path: str, content_bytes: bytes, message: str, sha: str | None = N
         print(f"  [publisher] GitHub API error {resp.status_code}: {resp.text[:300]}")
         return False
     return True
+
+
+def _delete_github_file(path: str, message: str) -> bool:
+    """Delete a single file from GitHub. Returns True on success or if file doesn't exist."""
+    _, sha = _get_file(path)
+    if sha is None:
+        return True  # already gone
+    url = f"{GITHUB_API}/repos/{GITHUB_REPO}/contents/{path}"
+    payload = {"message": message, "sha": sha, "branch": GITHUB_BRANCH}
+    with httpx.Client(timeout=20.0) as client:
+        resp = client.delete(url, headers=_headers(), json=payload)
+    if resp.status_code == 200:
+        return True
+    print(f"  [publisher] GitHub delete error {resp.status_code} for {path}: {resp.text[:200]}")
+    return False
+
+
+def _remove_from_index_ts(current_content: str, slug: str, camel_name: str) -> str:
+    """Remove the import line and array entry for slug from index.ts."""
+    lines = current_content.split("\n")
+
+    # Remove the import line
+    import_line = f'import {{ {camel_name} }} from "./papers/{slug}";'
+    lines = [l for l in lines if l.strip() != import_line.strip()]
+
+    # Remove the array entry (matches "  camelName," with optional trailing space/comment)
+    entry_pattern = re.compile(rf'^\s*{re.escape(camel_name)}\s*,?\s*$')
+    lines = [l for l in lines if not entry_pattern.match(l)]
+
+    return "\n".join(lines)
+
+
+def _delete_article_from_github(slug: str) -> dict:
+    """
+    Remove a published article from the GitHub repo:
+      1. Delete lib/research/papers/{slug}.ts
+      2. Delete public/images/{slug}.png  (best-effort)
+      3. Update lib/research/index.ts to remove import + array entry
+    Triggers a Vercel redeploy that removes the page from the live site.
+    """
+    if not GITHUB_TOKEN or not GITHUB_REPO:
+        return {"success": False, "message": "GITHUB_TOKEN or GITHUB_REPO not configured"}
+
+    camel_name = _slug_to_camel(slug)
+    today = datetime.now().strftime("%Y-%m-%d")
+    commit_msg = f"chore: remove article '{slug}' ({today})"
+
+    # 1. Delete the TypeScript paper
+    paper_path = f"lib/research/papers/{slug}.ts"
+    if not _delete_github_file(paper_path, commit_msg):
+        return {"success": False, "message": f"Failed to delete {paper_path} from GitHub"}
+    print(f"  [publisher] ✓ Deleted {paper_path} from GitHub")
+
+    # 2. Delete the hero image (best-effort — don't fail if missing)
+    img_path = f"public/images/{slug}.png"
+    if not _delete_github_file(img_path, commit_msg):
+        print(f"  [publisher] ⚠ Could not delete {img_path} (continuing)")
+    else:
+        print(f"  [publisher] ✓ Deleted {img_path} from GitHub")
+
+    # 3. Update index.ts to remove import + array entry
+    index_path = "lib/research/index.ts"
+    current_index, index_sha = _get_file(index_path)
+    if current_index is None:
+        return {"success": False, "message": "Could not fetch lib/research/index.ts from GitHub"}
+
+    updated_index = _remove_from_index_ts(current_index, slug, camel_name)
+    if updated_index == current_index:
+        print(f"  [publisher] index.ts did not contain {slug}, skipping")
+    else:
+        idx_ok = _put_file(
+            index_path,
+            updated_index.encode("utf-8"),
+            commit_msg,
+            sha=index_sha,
+        )
+        if not idx_ok:
+            return {"success": False, "message": "Failed to update lib/research/index.ts"}
+        print(f"  [publisher] ✓ Removed '{slug}' from lib/research/index.ts")
+
+    return {"success": True, "message": f"Removed '{slug}' from live site — Vercel redeploying"}
 
 
 def _slug_to_camel(slug: str) -> str:
