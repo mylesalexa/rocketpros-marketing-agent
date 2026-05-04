@@ -24,7 +24,7 @@ from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
-from modules.publisher import publish_article, get_pending_articles, get_linkedin_posts
+from modules.publisher import publish_article, get_pending_articles, get_linkedin_posts, delete_article
 
 app = FastAPI(title="RocketPros Marketing Agent", docs_url=None, redoc_url=None)
 security = HTTPBasic()
@@ -147,6 +147,8 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
 .btn-publish { background: #16a34a; color: #fff; font-size: 14px; padding: 10px 24px; }
 .btn-run { background: #7c3aed; color: #fff; font-size: 14px; padding: 10px 24px; }
 .btn-run.running { background: #374151; }
+.btn-delete { background: #1e293b; color: #fca5a5; border: 1px solid #7f1d1d; }
+.btn-delete:hover { background: #7f1d1d; color: #fff; }
 .empty { text-align: center; padding: 60px 0; color: #475569; }
 .empty h2 { font-size: 18px; margin-bottom: 8px; color: #64748b; }
 pre { background: #0a0d16; border: 1px solid #2d3748; border-radius: 8px; padding: 16px;
@@ -304,6 +306,7 @@ def dashboard(_: None = Depends(require_auth)):
         for a in articles:
             img_badge = '<span class="badge badge-cyan">Image ✓</span>' if a["has_image"] else '<span class="badge badge-gray">No image</span>'
             li_badge = '<span class="badge badge-violet">LinkedIn ✓</span>' if a["has_linkedin"] else '<span class="badge badge-gray">No LinkedIn</span>'
+            pub_badge = '<span class="badge badge-green">Published ✓</span>' if a["is_published"] else ''
 
             # Hero image block — thumbnail + download link
             if a["has_image"]:
@@ -319,17 +322,25 @@ def dashboard(_: None = Depends(require_auth)):
             else:
                 image_block = ""
 
+            # Publish button — locked if already published
+            if a["is_published"]:
+                publish_btn = '<button class="btn btn-publish" disabled style="background:#1e4d2b;color:#4ade80;cursor:not-allowed;">✅ Published</button>'
+            else:
+                publish_btn = f'<button onclick="publishArticle(\'{a["slug"]}\', this)" class="btn btn-publish">🚀 Publish to Website</button>'
+
             cards += f"""
-            <div class="card">
-              <div class="icons">{img_badge} {li_badge}</div>
+            <div class="card" id="card-{a['slug']}">
+              <div class="icons">{img_badge} {li_badge} {pub_badge}</div>
               <h2>{a['title']}</h2>
               <div class="meta">{a['slug']} &middot; {a['read_time']} &middot; Generated {a['modified']}</div>
               <div class="abstract">{a['abstract']}</div>
               {image_block}
               <div class="actions">
                 <a href="/article/{a['slug']}" class="btn btn-secondary">Preview &rarr;</a>
-                <button onclick="publishArticle('{a['slug']}', this)" class="btn btn-publish">
-                  🚀 Publish to Website
+                {publish_btn}
+                <button onclick="deleteArticle('{a['slug']}', this)" class="btn btn-secondary"
+                  style="color:#fca5a5;border-color:#7f1d1d;" title="Delete from dashboard">
+                  🗑 Delete
                 </button>
               </div>
               <div id="result-{a['slug']}" style="margin-top:12px;"></div>
@@ -492,8 +503,12 @@ async function publishArticle(slug, btn) {{
     if (data.success) {{
       resultDiv.innerHTML = '<div class="success-banner">✅ ' + data.message +
         (data.url ? ' <a href="' + data.url + '" target="_blank" style="color:#4ade80">' + data.url + '</a>' : '') + '</div>';
+      // Lock the button permanently
       btn.textContent = '✅ Published';
-      btn.style.background = '#374151';
+      btn.style.background = '#1e4d2b';
+      btn.style.color = '#4ade80';
+      btn.style.cursor = 'not-allowed';
+      btn.onclick = null;
     }} else {{
       resultDiv.innerHTML = '<div class="error-banner">❌ ' + data.message + '</div>';
       btn.disabled = false;
@@ -503,6 +518,32 @@ async function publishArticle(slug, btn) {{
     resultDiv.innerHTML = '<div class="error-banner">❌ Network error: ' + e.message + '</div>';
     btn.disabled = false;
     btn.textContent = '🚀 Publish to Website';
+  }}
+}}
+
+async function deleteArticle(slug, btn) {{
+  if (!confirm('Delete "' + slug + '" from the dashboard? This removes the local files but does NOT unpublish it from the website.')) return;
+  btn.disabled = true;
+  btn.textContent = 'Deleting...';
+  try {{
+    const resp = await fetch('/article/' + slug, {{ method: 'DELETE' }});
+    const data = await resp.json();
+    if (data.success) {{
+      const card = document.getElementById('card-' + slug);
+      if (card) {{
+        card.style.transition = 'opacity 0.3s';
+        card.style.opacity = '0';
+        setTimeout(() => card.remove(), 300);
+      }}
+    }} else {{
+      alert('Delete failed: ' + data.message);
+      btn.disabled = false;
+      btn.textContent = '🗑 Delete';
+    }}
+  }} catch(e) {{
+    alert('Network error: ' + e.message);
+    btn.disabled = false;
+    btn.textContent = '🗑 Delete';
   }}
 }}
 
@@ -624,6 +665,12 @@ def download_image(slug: str, _: None = Depends(require_auth)):
         filename=f"{slug}.png",
         headers={"Content-Disposition": f'attachment; filename="{slug}.png"'},
     )
+
+
+@app.delete("/article/{slug}")
+def remove_article(slug: str, _: None = Depends(require_auth)):
+    result = delete_article(slug)
+    return JSONResponse(content=result)
 
 
 @app.post("/publish/{slug}")

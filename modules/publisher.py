@@ -15,6 +15,7 @@ Required env vars:
 
 import os
 import base64
+import json
 import re
 from pathlib import Path
 from datetime import datetime
@@ -29,6 +30,61 @@ GITHUB_BRANCH = os.getenv("GITHUB_BRANCH", "main")
 GITHUB_API = "https://api.github.com"
 
 OUTPUT_DIR = Path(__file__).parent.parent / "output"
+PUBLISHED_REGISTRY = OUTPUT_DIR / "published.json"
+
+
+# ── Published registry ─────────────────────────────────────────────────────────
+
+def _load_published() -> dict:
+    """Load the published slugs registry. Returns {slug: iso_timestamp}."""
+    if PUBLISHED_REGISTRY.exists():
+        try:
+            return json.loads(PUBLISHED_REGISTRY.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+    return {}
+
+
+def _save_published(registry: dict) -> None:
+    PUBLISHED_REGISTRY.parent.mkdir(parents=True, exist_ok=True)
+    PUBLISHED_REGISTRY.write_text(json.dumps(registry, indent=2), encoding="utf-8")
+
+
+def mark_as_published(slug: str) -> None:
+    registry = _load_published()
+    registry[slug] = datetime.now().isoformat()
+    _save_published(registry)
+
+
+def is_published(slug: str) -> bool:
+    return slug in _load_published()
+
+
+def delete_article(slug: str) -> dict:
+    """
+    Delete all local output files for an article (ts, image, linkedin).
+    Also removes from published registry if present.
+    Does NOT touch GitHub — only local output files.
+    """
+    deleted = []
+    for path in [
+        OUTPUT_DIR / "articles" / f"{slug}.ts",
+        OUTPUT_DIR / "images" / f"{slug}.png",
+        OUTPUT_DIR / "linkedin" / f"{slug}.txt",
+    ]:
+        if path.exists():
+            path.unlink()
+            deleted.append(path.name)
+
+    # Remove from published registry
+    registry = _load_published()
+    if slug in registry:
+        del registry[slug]
+        _save_published(registry)
+
+    if deleted:
+        return {"success": True, "message": f"Deleted: {', '.join(deleted)}"}
+    return {"success": False, "message": f"No files found for slug '{slug}'"}
 
 
 def _headers() -> dict:
@@ -246,6 +302,9 @@ def publish_article(slug: str) -> dict:
     article_url = f"{site_url}/research/{slug}"
     print(f"  [publisher] ✓ Done — deploying to {article_url}")
 
+    # Mark as published so the dashboard shows the correct state
+    mark_as_published(slug)
+
     return {
         "success": True,
         "message": f"Published successfully. Vercel will deploy in ~60 seconds.",
@@ -284,7 +343,9 @@ def get_pending_articles() -> list[dict]:
         # Check if LinkedIn posts exist
         has_linkedin = (OUTPUT_DIR / "linkedin" / f"{slug}.txt").exists()
 
-        # Check if already published (exists in GitHub)
+        # Check if already published to the website
+        published = is_published(slug)
+
         articles.append({
             "slug": slug,
             "title": title,
@@ -292,6 +353,7 @@ def get_pending_articles() -> list[dict]:
             "read_time": read_time,
             "has_image": has_image,
             "has_linkedin": has_linkedin,
+            "is_published": published,
             "modified": datetime.fromtimestamp(ts_file.stat().st_mtime).strftime("%Y-%m-%d %H:%M"),
         })
 
