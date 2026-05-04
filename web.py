@@ -3,18 +3,25 @@ RocketPros Marketing Agent — Web Dashboard
 Runs alongside the scheduler on Railway PRO.
 
 Routes:
-  GET  /           — Dashboard: list of pending articles
-  GET  /article/{slug}  — Article detail with LinkedIn posts + TypeScript preview
-  POST /publish/{slug}  — Publish article to rprosite-main via GitHub API
-  GET  /health     — Health check
+  GET  /                  — Dashboard: articles + force-run console
+  GET  /article/{slug}    — Article detail with LinkedIn posts + TypeScript preview
+  POST /publish/{slug}    — Publish article to rprosite-main via GitHub API
+  POST /run               — Force-trigger the pipeline immediately
+  GET  /run/stream        — SSE stream of live pipeline logs
+  GET  /run/status        — JSON: { running, log_count }
+  GET  /health            — Health check (no auth)
 """
 
 import os
+import sys
 import secrets
+import threading
+from datetime import datetime
 from pathlib import Path
+
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 
 from modules.publisher import publish_article, get_pending_articles, get_linkedin_posts
 
@@ -23,10 +30,68 @@ security = HTTPBasic()
 
 DASHBOARD_USER = os.getenv("DASHBOARD_USER", "myles")
 DASHBOARD_PASSWORD = os.getenv("DASHBOARD_PASSWORD", "")
+SITE_URL = os.getenv("SITE_URL", "https://rocketpros.app")
+DRY_RUN = os.getenv("DRY_RUN", "false").lower() == "true"
+OUTPUT_DIR = Path(__file__).parent / "output"
 
+
+# ── Run state — shared between pipeline thread and SSE stream ──────────────────
+
+class RunState:
+    def __init__(self):
+        self.running = False
+        self.logs: list[str] = []
+        self._lock = threading.Lock()
+
+    def start(self):
+        with self._lock:
+            self.running = True
+            self.logs = []
+
+    def append(self, line: str):
+        with self._lock:
+            ts = datetime.now().strftime("%H:%M:%S")
+            self.logs.append(f"[{ts}] {line}")
+
+    def finish(self):
+        with self._lock:
+            self.running = False
+
+    def snapshot(self, from_idx: int) -> tuple[list[str], bool]:
+        with self._lock:
+            return self.logs[from_idx:], self.running
+
+
+run_state = RunState()
+
+
+# ── Stdout capture — pipes print() calls into run_state ───────────────────────
+
+class LogCapture:
+    """Replaces sys.stdout in the pipeline thread, feeding lines to RunState."""
+    def __init__(self, state: RunState, original):
+        self.state = state
+        self.original = original
+        self._buf = ""
+
+    def write(self, text: str):
+        self.original.write(text)
+        self._buf += text
+        while "\n" in self._buf:
+            line, self._buf = self._buf.split("\n", 1)
+            if line.strip():
+                self.state.append(line)
+
+    def flush(self):
+        self.original.flush()
+
+    def fileno(self):
+        return self.original.fileno()
+
+
+# ── Auth ───────────────────────────────────────────────────────────────────────
 
 def require_auth(credentials: HTTPBasicCredentials = Depends(security)):
-    """Enforce HTTP Basic Auth on all dashboard routes."""
     if not DASHBOARD_PASSWORD:
         raise HTTPException(status_code=500, detail="DASHBOARD_PASSWORD env var not set")
     user_ok = secrets.compare_digest(credentials.username.encode(), DASHBOARD_USER.encode())
@@ -38,9 +103,6 @@ def require_auth(credentials: HTTPBasicCredentials = Depends(security)):
             headers={"WWW-Authenticate": "Basic"},
         )
 
-SITE_URL = os.getenv("SITE_URL", "https://rocketpros.app")
-OUTPUT_DIR = Path(__file__).parent / "output"
-
 
 # ── Shared CSS ─────────────────────────────────────────────────────────────────
 
@@ -48,9 +110,9 @@ CSS = """
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
        background: #0f1117; color: #e2e8f0; min-height: 100vh; }
-.wrap { max-width: 900px; margin: 0 auto; padding: 32px 16px; }
+.wrap { max-width: 1100px; margin: 0 auto; padding: 32px 16px; }
 .header { border-bottom: 2px solid #06b6d4; padding-bottom: 20px; margin-bottom: 32px;
-          display: flex; align-items: center; justify-content: space-between; }
+          display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; }
 .header h1 { color: #06b6d4; font-size: 20px; font-weight: 700; }
 .header p { color: #64748b; font-size: 13px; margin-top: 4px; }
 .badge { display: inline-block; padding: 3px 10px; border-radius: 20px;
@@ -59,6 +121,9 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
 .badge-violet { background: #8b5cf6; color: #fff; }
 .badge-green { background: #16a34a; color: #fff; }
 .badge-gray { background: #374151; color: #9ca3af; }
+.badge-orange { background: #c2410c; color: #fff; }
+.layout { display: grid; grid-template-columns: 1fr 400px; gap: 24px; align-items: start; }
+@media (max-width: 800px) { .layout { grid-template-columns: 1fr; } }
 .card { background: #1a1f2e; border: 1px solid #2d3748; border-radius: 10px;
         padding: 24px; margin-bottom: 20px; }
 .card h2 { font-size: 17px; font-weight: 700; color: #f1f5f9; margin-bottom: 6px; }
@@ -69,10 +134,12 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
        font-weight: 600; cursor: pointer; border: none; text-decoration: none;
        transition: opacity .15s; }
 .btn:hover { opacity: .85; }
+.btn:disabled { opacity: .5; cursor: not-allowed; }
 .btn-primary { background: #06b6d4; color: #0f1117; }
 .btn-secondary { background: #1e293b; color: #94a3b8; border: 1px solid #374151; }
 .btn-publish { background: #16a34a; color: #fff; font-size: 14px; padding: 10px 24px; }
-.btn-danger { background: #7f1d1d; color: #fca5a5; }
+.btn-run { background: #7c3aed; color: #fff; font-size: 14px; padding: 10px 24px; }
+.btn-run.running { background: #374151; }
 .empty { text-align: center; padding: 60px 0; color: #475569; }
 .empty h2 { font-size: 18px; margin-bottom: 8px; color: #64748b; }
 pre { background: #0a0d16; border: 1px solid #2d3748; border-radius: 8px; padding: 16px;
@@ -91,14 +158,116 @@ pre { background: #0a0d16; border: 1px solid #2d3748; border-radius: 8px; paddin
 .back { color: #06b6d4; text-decoration: none; font-size: 13px; }
 .back:hover { text-decoration: underline; }
 .icons { display: flex; gap: 8px; margin-bottom: 8px; }
+
+/* Console panel */
+.console-panel { background: #1a1f2e; border: 1px solid #2d3748; border-radius: 10px;
+                 padding: 0; overflow: hidden; position: sticky; top: 24px; }
+.console-header { background: #0f1117; padding: 14px 18px;
+                  border-bottom: 1px solid #2d3748; display: flex;
+                  align-items: center; justify-content: space-between; }
+.console-header h3 { font-size: 13px; font-weight: 700; color: #94a3b8;
+                     text-transform: uppercase; letter-spacing: .08em; }
+.console-status { font-size: 11px; font-weight: 700; padding: 2px 8px;
+                  border-radius: 20px; text-transform: uppercase; letter-spacing: .06em; }
+.console-status.idle { background: #1e293b; color: #475569; }
+.console-status.running { background: #7c3aed22; color: #a78bfa;
+                           animation: pulse 1.5s ease-in-out infinite; }
+.console-status.done { background: #052e16; color: #4ade80; }
+.console-status.error { background: #450a0a; color: #fca5a5; }
+@keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:.5; } }
+.console-body { font-family: 'Courier New', monospace; font-size: 11px; line-height: 1.6;
+                color: #94a3b8; padding: 14px 18px; height: 520px; overflow-y: auto;
+                background: #0a0d16; }
+.console-body .log-line { margin-bottom: 2px; }
+.console-body .log-ts { color: #374151; margin-right: 6px; }
+.console-body .log-text { color: #a5f3fc; }
+.console-body .log-text.err { color: #fca5a5; }
+.console-body .log-text.done { color: #4ade80; font-weight: 700; }
+.console-body .log-text.step { color: #f59e0b; font-weight: 700; }
+.console-empty { color: #374151; font-style: italic; }
+.console-footer { padding: 14px 18px; border-top: 1px solid #2d3748; }
 """
+
+
+# ── Pipeline runner ────────────────────────────────────────────────────────────
+
+def _run_pipeline_thread():
+    """Runs in a background thread. Captures all stdout into run_state."""
+    original_stdout = sys.stdout
+    capture = LogCapture(run_state, original_stdout)
+    sys.stdout = capture
+
+    try:
+        run_state.append("=== Pipeline started ===")
+        from pipeline import run_pipeline
+        summary = run_pipeline(dry_run=DRY_RUN)
+
+        errors = summary.get("errors", [])
+        succeeded = summary.get("articles_succeeded", 0)
+        duration = summary.get("duration_seconds", 0)
+
+        run_state.append(f"=== Pipeline complete: {succeeded} article(s), {len(errors)} error(s), {duration:.0f}s ===")
+    except Exception as e:
+        run_state.append(f"ERROR: Pipeline crashed — {e}")
+    finally:
+        sys.stdout = original_stdout
+        run_state.finish()
 
 
 # ── Routes ─────────────────────────────────────────────────────────────────────
 
 @app.get("/health")
 def health():
-    return {"status": "ok"}
+    return {"status": "ok", "running": run_state.running}
+
+
+@app.get("/run/status")
+def run_status(_: None = Depends(require_auth)):
+    return JSONResponse({"running": run_state.running, "log_count": len(run_state.logs)})
+
+
+@app.post("/run")
+def force_run(_: None = Depends(require_auth)):
+    if run_state.running:
+        return JSONResponse({"started": False, "message": "Pipeline is already running"})
+    run_state.start()
+    t = threading.Thread(target=_run_pipeline_thread, daemon=True)
+    t.start()
+    return JSONResponse({"started": True, "message": "Pipeline started"})
+
+
+@app.get("/run/stream")
+async def run_stream(_: None = Depends(require_auth)):
+    """
+    Server-Sent Events stream. Client connects and receives log lines in real time.
+    Closes automatically when pipeline finishes.
+    """
+    import asyncio
+
+    async def event_generator():
+        idx = 0
+        while True:
+            new_lines, still_running = run_state.snapshot(idx)
+            for line in new_lines:
+                # Escape for SSE: replace newlines
+                safe = line.replace("\n", " ")
+                yield f"data: {safe}\n\n"
+                idx += 1
+
+            if not still_running and idx >= len(run_state.logs):
+                yield "data: __DONE__\n\n"
+                break
+
+            await asyncio.sleep(0.4)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -106,10 +275,10 @@ def dashboard(_: None = Depends(require_auth)):
     articles = get_pending_articles()
 
     if not articles:
-        body = """
+        articles_html = """
         <div class="empty">
           <h2>No articles yet</h2>
-          <p>Articles will appear here after the daily pipeline runs.</p>
+          <p>Click "Force Run Pipeline" to generate your first articles, or wait for the 8 AM daily run.</p>
         </div>"""
     else:
         cards = ""
@@ -130,7 +299,7 @@ def dashboard(_: None = Depends(require_auth)):
               </div>
               <div id="result-{a['slug']}" style="margin-top:12px;"></div>
             </div>"""
-        body = cards
+        articles_html = cards
 
     html = f"""<!DOCTYPE html>
 <html lang="en">
@@ -145,13 +314,121 @@ def dashboard(_: None = Depends(require_auth)):
   <div class="header">
     <div>
       <h1>🚀 RocketPros Article Dashboard</h1>
-      <p>{len(articles)} article(s) pending review</p>
+      <p>{len(articles)} article(s) pending review &middot; Next auto-run: 8:00 AM CT daily</p>
     </div>
-    <span class="badge badge-cyan">Marketing Agent</span>
+    <div style="display:flex;gap:10px;align-items:center;">
+      <span class="badge badge-cyan">Marketing Agent</span>
+    </div>
   </div>
-  {body}
+
+  <div class="layout">
+    <!-- Left: articles -->
+    <div>
+      {articles_html}
+    </div>
+
+    <!-- Right: console panel -->
+    <div>
+      <div class="console-panel">
+        <div class="console-header">
+          <h3>Pipeline Console</h3>
+          <span id="console-status" class="console-status idle">Idle</span>
+        </div>
+        <div class="console-body" id="console-body">
+          <span class="console-empty">Run the pipeline to see live output here.</span>
+        </div>
+        <div class="console-footer">
+          <button id="run-btn" onclick="forceRun(this)" class="btn btn-run" style="width:100%">
+            ⚡ Force Run Pipeline
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
 </div>
+
 <script>
+let es = null;
+
+function forceRun(btn) {{
+  if (btn.disabled) return;
+  btn.disabled = true;
+  btn.textContent = '⏳ Running...';
+  btn.classList.add('running');
+
+  const body = document.getElementById('console-body');
+  const status = document.getElementById('console-status');
+  body.innerHTML = '';
+  status.className = 'console-status running';
+  status.textContent = 'Running';
+
+  // Start the pipeline
+  fetch('/run', {{ method: 'POST' }})
+    .then(r => r.json())
+    .then(data => {{
+      if (!data.started && data.message.includes('already')) {{
+        appendLog('Pipeline is already running — connecting to stream...');
+      }}
+      startStream(btn);
+    }})
+    .catch(e => {{
+      appendLog('ERROR: Could not start pipeline — ' + e.message);
+      setDone(btn, false);
+    }});
+}}
+
+function startStream(btn) {{
+  if (es) es.close();
+  es = new EventSource('/run/stream');
+
+  es.onmessage = (e) => {{
+    if (e.data === '__DONE__') {{
+      es.close();
+      setDone(btn, true);
+      // Reload page after 3s so new articles appear
+      setTimeout(() => location.reload(), 3000);
+      return;
+    }}
+    appendLog(e.data);
+  }};
+
+  es.onerror = () => {{
+    es.close();
+    appendLog('Stream disconnected.');
+    setDone(btn, false);
+  }};
+}}
+
+function appendLog(line) {{
+  const body = document.getElementById('console-body');
+  const div = document.createElement('div');
+  div.className = 'log-line';
+
+  // Colour-code special lines
+  let cls = 'log-text';
+  if (line.includes('ERROR') || line.includes('error')) cls += ' err';
+  else if (line.includes('STEP ') || line.includes('===')) cls += ' step';
+  else if (line.includes('Done') || line.includes('complete') || line.includes('✓')) cls += ' done';
+
+  div.innerHTML = '<span class="' + cls + '">' + escHtml(line) + '</span>';
+  body.appendChild(div);
+  body.scrollTop = body.scrollHeight;
+}}
+
+function setDone(btn, success) {{
+  const status = document.getElementById('console-status');
+  status.className = 'console-status ' + (success ? 'done' : 'error');
+  status.textContent = success ? 'Done' : 'Error';
+  btn.disabled = false;
+  btn.textContent = '⚡ Force Run Pipeline';
+  btn.classList.remove('running');
+  if (success) appendLog('✓ Pipeline complete — reloading in 3 seconds...');
+}}
+
+function escHtml(t) {{
+  return t.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}}
+
 async function publishArticle(slug, btn) {{
   btn.disabled = true;
   btn.textContent = 'Publishing...';
@@ -175,6 +452,21 @@ async function publishArticle(slug, btn) {{
     btn.textContent = '🚀 Publish to Website';
   }}
 }}
+
+// On load: if pipeline is already running, auto-connect to stream
+fetch('/run/status')
+  .then(r => r.json())
+  .then(data => {{
+    if (data.running) {{
+      const btn = document.getElementById('run-btn');
+      btn.disabled = true;
+      btn.textContent = '⏳ Running...';
+      btn.classList.add('running');
+      document.getElementById('console-status').className = 'console-status running';
+      document.getElementById('console-status').textContent = 'Running';
+      startStream(btn);
+    }}
+  }});
 </script>
 </body>
 </html>"""
@@ -188,11 +480,9 @@ def article_detail(slug: str, _: None = Depends(require_auth)):
     if not article:
         raise HTTPException(status_code=404, detail="Article not found")
 
-    # Read raw TypeScript
     ts_path = OUTPUT_DIR / "articles" / f"{slug}.ts"
     ts_code = ts_path.read_text(encoding="utf-8") if ts_path.exists() else "(file not found)"
 
-    # LinkedIn posts
     linkedin = get_linkedin_posts(slug)
     linkedin_html = ""
     for variant, label in [("hook", "Hook Post (Myles)"), ("insight", "Insight Post (Ali)"), ("story", "Story Post (Myles)")]:
@@ -234,7 +524,6 @@ def article_detail(slug: str, _: None = Depends(require_auth)):
 
   <div class="section-label">TypeScript — /lib/research/papers/{slug}.ts</div>
   <pre>{ts_code}</pre>
-
 </div>
 <script>
 async function publishArticle(slug, btn) {{
