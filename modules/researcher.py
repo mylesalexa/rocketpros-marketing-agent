@@ -14,29 +14,57 @@ from modules.deduplicator import filter_topics
 BRAVE_API_KEY = os.getenv("BRAVE_API_KEY", "")
 BRAVE_SEARCH_URL = "https://api.search.brave.com/res/v1/web/search"
 
-# Rotating topic category seeds — one random subset is queried each daily run
-TOPIC_CATEGORIES = [
-    "MPI accredited repair program requirements 2026",
-    "SGI RPS scoring collision shop tier 2026",
-    "ADAS calibration OEM requirements Canada collision",
-    "collision repair cycle time reduction Canada 2026",
-    "parts inflation collision repair Canada 2026",
-    "Mitchell estimating best practices collision Canada",
-    "collision repair documentation insurer approval Canada",
-    "OEM position statements repair standard of care 2026",
-    "supplement discipline collision repair best practices",
-    "Canadian collision severity trends 2026",
-    "aluminum collision repair MPI SGI requirements",
-    "pre-scan post-scan required collision repair Canada",
-    "OEM sectioning restrictions modern vehicles 2026",
-    "labour rate vs labour hours collision repair Canada",
-    "rental car cost reduction collision repair Canada",
-    "ADAS recalibration windshield replacement MPI SGI",
-    "how to write supplement approved first time Canada",
-    "collision shop documentation workflow software 2026",
-    "EV collision repair requirements Canada insurance",
-    "structural scan collision repair MPI documentation",
+# Topic categories organized by tier for balanced daily runs.
+# Each entry: (query_string, tier)
+# tier: "niche" = MPI/SGI/Canadian programs, "canada" = pan-Canadian, "north_america" = US or NA
+TOPIC_CATEGORIES_TIERED = [
+    # ── Niche: MPI / SGI (Manitoba + Saskatchewan) ─────────────────────────────
+    ("MPI accredited repair program requirements 2026", "niche"),
+    ("SGI RPS scoring collision shop tier 2026", "niche"),
+    ("ADAS calibration OEM requirements Canada collision", "niche"),
+    ("collision repair cycle time reduction Canada 2026", "niche"),
+    ("parts inflation collision repair Canada 2026", "niche"),
+    ("Mitchell estimating best practices collision Canada", "niche"),
+    ("collision repair documentation insurer approval Canada", "niche"),
+    ("OEM position statements repair standard of care 2026", "niche"),
+    ("supplement discipline collision repair best practices", "niche"),
+    ("Canadian collision severity trends 2026", "niche"),
+    ("aluminum collision repair MPI SGI requirements", "niche"),
+    ("pre-scan post-scan required collision repair Canada", "niche"),
+    ("OEM sectioning restrictions modern vehicles 2026", "niche"),
+    ("labour rate vs labour hours collision repair Canada", "niche"),
+    ("rental car cost reduction collision repair Canada", "niche"),
+    ("ADAS recalibration windshield replacement MPI SGI", "niche"),
+    ("how to write supplement approved first time Canada", "niche"),
+    ("collision shop documentation workflow software 2026", "niche"),
+    ("EV collision repair requirements Canada insurance", "niche"),
+    ("structural scan collision repair MPI documentation", "niche"),
+    # ── Canadian-broad (pan-Canadian, not MPI/SGI specific) ────────────────────
+    ("ICBC material damage program accredited shop 2026", "canada"),
+    ("Intact DRP program collision shop documentation Canada", "canada"),
+    ("CCIF collision repair industry trends Canada 2026", "canada"),
+    ("Canadian collision repair parts inflation IBC 2026", "canada"),
+    ("EV collision repair battery assessment insurance Canada", "canada"),
+    ("hail damage repair program catastrophe response Canada collision", "canada"),
+    # ── North American / US ────────────────────────────────────────────────────
+    ("State Farm Select Service DRP documentation requirements 2026", "north_america"),
+    ("GEICO ARX program collision shop cycle time 2026", "north_america"),
+    ("Progressive Service Center collision repair requirements 2026", "north_america"),
+    ("ADAS calibration requirements DRP collision repair US 2026", "north_america"),
+    ("Assured Performance OEM certification collision repair 2026", "north_america"),
+    ("CCC ONE estimating best practices collision repair 2026", "north_america"),
+    ("supplement approval rate collision repair US shops 2026", "north_america"),
+    ("collision repair severity United States 2026 CCC Crash Course", "north_america"),
+    ("SCRS collision repair industry study findings 2026", "north_america"),
+    ("non-OEM aftermarket parts DRP insurer requirements 2026", "north_america"),
+    ("EV collision repair Tesla Rivian OEM certification requirements", "north_america"),
+    ("cycle time benchmark DRP collision repair United States 2026", "north_america"),
+    ("pre-scan post-scan required collision repair United States 2026", "north_america"),
+    ("OEM position statements structural repair North America 2026", "north_america"),
 ]
+
+# Flat list for backward-compatible use
+TOPIC_CATEGORIES = [q for q, _ in TOPIC_CATEGORIES_TIERED]
 
 # How many search queries to run per daily pipeline invocation
 QUERIES_PER_RUN = 6
@@ -161,10 +189,23 @@ def discover_topics(n_topics: int = 5, direction: str = "") -> list[dict]:
 
 
 def _discover_autonomous(n_topics: int) -> list[dict]:
-    """Autonomous mode: random subset of TOPIC_CATEGORIES."""
+    """Autonomous mode: guaranteed mix of niche + north_america + canada queries."""
     print(f"[researcher] Autonomous mode — discovering via Brave Search ({QUERIES_PER_RUN} queries)...")
 
-    queries = random.sample(TOPIC_CATEGORIES, min(QUERIES_PER_RUN, len(TOPIC_CATEGORIES)))
+    niche_pool = [q for q, t in TOPIC_CATEGORIES_TIERED if t == "niche"]
+    na_pool = [q for q, t in TOPIC_CATEGORIES_TIERED if t == "north_america"]
+    canada_pool = [q for q, t in TOPIC_CATEGORIES_TIERED if t == "canada"]
+
+    # Always pick at least 1 niche and 1 north_america; fill remainder randomly from all
+    guaranteed = [
+        random.choice(niche_pool),
+        random.choice(na_pool),
+    ]
+    remaining_pool = [q for q in TOPIC_CATEGORIES if q not in guaranteed]
+    remaining_count = max(0, QUERIES_PER_RUN - len(guaranteed))
+    remaining = random.sample(remaining_pool, min(remaining_count, len(remaining_pool)))
+    queries = guaranteed + remaining
+    random.shuffle(queries)
 
     raw_topics = []
     for query in queries:

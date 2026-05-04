@@ -154,6 +154,18 @@ def generate_article(topic: dict) -> dict:
     if direction:
         direction_context = f"\n\nSPECIFIC DIRECTION FROM EDITOR: {direction}\nThis is the specific angle, focus, or subject the article must cover. Follow this direction precisely — use it to determine the article's thesis, which sections to emphasize, and which OEM/program/carrier details to research and include."
 
+    # Region-aware citation guidance
+    topic_lower = (topic_title + " " + topic_angle + " " + direction).lower()
+    if any(kw in topic_lower for kw in ["mpi", "sgi", "manitoba", "saskatchewan", "lvt", "light vehicle tariff"]):
+        citation_guidance = """Include 7–12 citations from: MPI portal (mpi.mb.ca), SGI portal (sgi.sk.ca), provincial legislation (Manitoba Public Insurance Corporation Act / Saskatchewan Government Insurance Act), Insurance Bureau of Canada (ibc.ca), Statistics Canada Table 18-10-0004-01 (statcan.gc.ca), I-CAR RTS (rts.i-car.com), OEM1Stop.com, CCC Crash Course (cccis.com), Mitchell Industry Trends, CCIF, IIHS-HLDI.
+Set region: "Canada" in the Paper object."""
+    elif any(kw in topic_lower for kw in ["state farm", "geico", "progressive", "allstate", "farmers", "us drp", "united states", "american", "usa"]):
+        citation_guidance = """Include 7–12 citations from: Society of Collision Repair Specialists / SCRS (scrs.com), Automotive Service Association / ASA (asashop.org), CCC Intelligent Solutions Crash Course (cccis.com), Mitchell Industry Trends (mitchellrepair.com), IIHS-HLDI (iihs.org), NHTSA (nhtsa.gov), Repairer Driven News (repairerdrivennews.com), I-CAR RTS (rts.i-car.com), Assured Performance Network (assuredperformance.net), state DOI where relevant.
+Set region: "United States" in the Paper object."""
+    else:
+        citation_guidance = """Include 7–12 citations drawing from both Canadian and US sources: Insurance Bureau of Canada (ibc.ca), Statistics Canada (statcan.gc.ca), CCC Crash Course (cccis.com), SCRS (scrs.com), ASA (asashop.org), Mitchell Industry Trends, IIHS-HLDI (iihs.org), I-CAR RTS (rts.i-car.com), MPI portal (mpi.mb.ca), SGI portal (sgi.sk.ca), CCIF, Repairer Driven News (repairerdrivennews.com).
+Set region: "North America" in the Paper object."""
+
     user_message = f"""Generate a complete RocketPros research article as a TypeScript Paper object.
 
 TOPIC: {topic_title}
@@ -186,10 +198,11 @@ REQUIRED SECTIONS (numbered H2s):
   6. How RocketPros aligns to [topic] — program-aligned, non-promotional framing
   7. The carrier perspective — MPI/SGI program-management view
 
-CITATION STANDARD (match existing papers):
-  {{ label: "Manitoba Public Insurance — Body Shop & Glass Information portal (program documents, bulletins, accreditation framework, Light Vehicle Tariff distribution).", url: "https://www.mpi.mb.ca/" }}
-  {{ label: "Statistics Canada, Consumer Price Index — vehicle parts, maintenance and repairs (Table 18-10-0004-01).", url: "https://www150.statcan.gc.ca" }}
-  Include 7–12 citations. Use: MPI portal, SGI portal, provincial legislation, IBC, Statistics Canada, I-CAR RTS, OEM1Stop.com, CCC Crash Course, Mitchell Industry Trends, CCIF, IIHS-HLDI.
+CITATION STANDARD (match existing papers exactly — full descriptive labels, no id field):
+  {{ label: "Manitoba Public Insurance — Body Shop & Glass Information portal.", url: "https://www.mpi.mb.ca/" }}
+  {{ label: "CCC Intelligent Solutions, Crash Course Report, 2024 Edition — US repairable severity benchmarks.", url: "https://cccis.com" }}
+  {{ label: "Society of Collision Repair Specialists (SCRS), Repair Segment Profile.", url: "https://www.scrs.com" }}
+  {citation_guidance}
 
 IMPORTANT: Write the COMPLETE article without stopping. All arrays must be fully closed.
 The file must end with exactly:   }};
