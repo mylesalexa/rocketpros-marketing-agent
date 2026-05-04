@@ -1,0 +1,40 @@
+{
+  "papers": [
+    {
+      "slug": "mpi-repair-program-2026",
+      "title": "MPI Accredited Repair Program 2026: What Shops Need to Know"
+    },
+    {
+      "slug": "sgi-accredited-repair-program-2026",
+      "title": "SGI Accredited Repair Program 2026: Saskatchewan Shop Requirements"
+    },
+    {
+      "slug": "documentation-readiness-mpi-sgi-claims",
+      "title": "Documentation Readiness for MPI and SGI Claims"
+    },
+    {
+      "slug": "canadian-collision-severity-public-insurer-premium",
+      "title": "Canadian Collision Severity and Public Insurer Premium Trends"
+    },
+    {
+      "slug": "decomposing-collision-severity-2026",
+      "title": "Decomposing Collision Severity in 2026"
+    },
+    {
+      "slug": "adas-frequency-cost-coverage-gap",
+      "title": "ADAS Frequency, Cost, and the Coverage Gap"
+    },
+    {
+      "slug": "oem-position-statements-standard-of-care",
+      "title": "OEM Position Statements and the Standard of Care"
+    },
+    {
+      "slug": "cycle-time-economics-supplement-cost",
+      "title": "Cycle Time Economics and Supplement Cost"
+    },
+    {
+      "slug": "documentation-readiness-approval-predictor",
+      "title": "Documentation Readiness as an Approval Predictor"
+    }
+  ]
+}

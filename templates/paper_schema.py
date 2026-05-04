@@ -1,0 +1,141 @@
+"""
+Python mirror of the Paper TypeScript type from /lib/research/types.ts.
+Used to validate generated article structure before sending the digest.
+"""
+
+from dataclasses import dataclass, field
+from typing import Literal, Optional
+
+
+@dataclass
+class Author:
+    name: str
+    role: str
+    company: str = "RocketPros"
+
+
+@dataclass
+class FAQ:
+    question: str
+    answer: str
+
+
+@dataclass
+class Citation:
+    id: int
+    text: str
+    url: Optional[str] = None
+
+
+# Section types mirror the TypeScript discriminated union
+@dataclass
+class SectionH2:
+    type: Literal["h2"] = "h2"
+    text: str = ""
+    id: Optional[str] = None
+
+
+@dataclass
+class SectionH3:
+    type: Literal["h3"] = "h3"
+    text: str = ""
+    id: Optional[str] = None
+
+
+@dataclass
+class SectionP:
+    type: Literal["p"] = "p"
+    text: str = ""
+
+
+@dataclass
+class SectionUL:
+    type: Literal["ul"] = "ul"
+    items: list[str] = field(default_factory=list)
+
+
+@dataclass
+class SectionOL:
+    type: Literal["ol"] = "ol"
+    items: list[str] = field(default_factory=list)
+
+
+@dataclass
+class SectionTable:
+    type: Literal["table"] = "table"
+    headers: list[str] = field(default_factory=list)
+    rows: list[list[str]] = field(default_factory=list)
+    caption: Optional[str] = None
+
+
+@dataclass
+class SectionCallout:
+    type: Literal["callout"] = "callout"
+    text: str = ""
+
+
+Section = SectionH2 | SectionH3 | SectionP | SectionUL | SectionOL | SectionTable | SectionCallout
+
+
+@dataclass
+class Paper:
+    slug: str
+    title: str
+    category: str
+    audience: str
+    authors: list[Author]
+    published: str  # ISO date string: "2026-05-04"
+    readTime: str   # e.g., "13 min"
+    region: Literal["Canada", "United States", "North America"]
+    abstract: str
+    keyFindings: list[str]
+    sections: list[Section]
+    shopImplications: list[str]
+    carrierImplications: list[str]
+    faq: list[FAQ]
+    citations: list[Citation]
+    subtitle: Optional[str] = None
+    updated: Optional[str] = None
+    tags: Optional[list[str]] = None
+
+
+# Validation helpers
+
+def validate_paper_dict(paper: dict) -> list[str]:
+    """
+    Validate a parsed paper dictionary against minimum AEO requirements.
+    Returns a list of error strings (empty = valid).
+    """
+    errors = []
+
+    required_keys = [
+        "slug", "title", "category", "audience", "authors", "published",
+        "readTime", "region", "abstract", "keyFindings", "sections",
+        "shopImplications", "carrierImplications", "faq", "citations"
+    ]
+    for key in required_keys:
+        if key not in paper:
+            errors.append(f"Missing required field: {key}")
+
+    if "keyFindings" in paper and len(paper["keyFindings"]) < 3:
+        errors.append("keyFindings must have at least 3 items")
+
+    if "faq" in paper and len(paper["faq"]) < 5:
+        errors.append("faq must have at least 5 questions")
+
+    if "citations" in paper and len(paper["citations"]) < 8:
+        errors.append("citations must have at least 8 entries")
+
+    if "sections" in paper:
+        tables = [s for s in paper["sections"] if s.get("type") == "table"]
+        if len(tables) < 2:
+            errors.append("sections must include at least 2 tables (AEO requirement)")
+
+        h2s = [s for s in paper["sections"] if s.get("type") == "h2"]
+        if len(h2s) < 6:
+            errors.append("sections must include at least 6 H2 headings")
+
+    if "region" in paper and paper["region"] not in ("Canada", "United States", "North America"):
+        errors.append(f"region must be 'Canada', 'United States', or 'North America', got: {paper['region']}")
+
+    return errors
