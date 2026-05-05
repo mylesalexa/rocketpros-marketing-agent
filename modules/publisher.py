@@ -155,7 +155,7 @@ def _delete_github_file(path: str, message: str) -> bool:
     url = f"{GITHUB_API}/repos/{GITHUB_REPO}/contents/{path}"
     payload = {"message": message, "sha": sha, "branch": GITHUB_BRANCH}
     with httpx.Client(timeout=20.0) as client:
-        resp = client.delete(url, headers=_headers(), json=payload)
+        resp = client.request("DELETE", url, headers=_headers(), json=payload)
     if resp.status_code == 200:
         return True
     print(f"  [publisher] GitHub delete error {resp.status_code} for {path}: {resp.text[:200]}")
