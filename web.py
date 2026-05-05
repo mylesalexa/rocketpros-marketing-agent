@@ -1670,9 +1670,9 @@ async function deleteArticle(slug, btn, isPublished) {{
   let removeFromGithub = false;
   if (isPublished) {{
     const choice = confirm(
-      'DELETE "' + slug + '"\n\n' +
-      'This article is LIVE on the website.\n\n' +
-      'Click OK to delete from BOTH the dashboard AND the live site (removes from rocketpros.app and triggers a Vercel redeploy).\n\n' +
+      'DELETE "' + slug + '"\\n\\n' +
+      'This article is LIVE on the website.\\n\\n' +
+      'Click OK to delete from BOTH the dashboard AND the live site (removes from rocketpros.app and triggers a Vercel redeploy).\\n\\n' +
       'Click Cancel to abort.'
     );
     if (!choice) return;
@@ -1690,7 +1690,7 @@ async function deleteArticle(slug, btn, isPublished) {{
       if (card) {{ card.style.opacity = '0'; card.style.transition = 'opacity .3s'; setTimeout(() => card.remove(), 300); }}
       if (removeFromGithub) {{
         const gh = data.github || {{}};
-        alert('Deleted from dashboard and GitHub.\n' + (gh.message || 'Vercel redeploy triggered — page will go offline in ~60 seconds.'));
+        alert('Deleted from dashboard and GitHub.\\n' + (gh.message || 'Vercel redeploy triggered — page will go offline in ~60 seconds.'));
       }}
     }} else {{ alert('Delete failed: ' + data.message); btn.disabled = false; btn.textContent = '&#x1F5D1; Delete'; }}
   }} catch(e) {{ alert('Error: ' + e.message); btn.disabled = false; btn.textContent = '&#x1F5D1; Delete'; }}
@@ -1698,12 +1698,12 @@ async function deleteArticle(slug, btn, isPublished) {{
 
 async function deleteLiveArticle(slug, btn) {{
   const confirmed = confirm(
-    'REMOVE "' + slug + '" FROM LIVE SITE\n\n' +
-    'This will:\n' +
-    '  - Delete the article TypeScript file from GitHub\n' +
-    '  - Delete the hero image from GitHub\n' +
-    '  - Remove it from the research index\n' +
-    '  - Trigger a Vercel redeploy (page offline in ~60s)\n\n' +
+    'REMOVE "' + slug + '" FROM LIVE SITE\\n\\n' +
+    'This will:\\n' +
+    '  - Delete the article TypeScript file from GitHub\\n' +
+    '  - Delete the hero image from GitHub\\n' +
+    '  - Remove it from the research index\\n' +
+    '  - Trigger a Vercel redeploy (page offline in ~60s)\\n\\n' +
     'This cannot be undone without re-publishing. Continue?'
   );
   if (!confirmed) return;
