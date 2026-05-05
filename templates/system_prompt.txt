@@ -135,6 +135,26 @@ REQUIRED ARTICLE STRUCTURE:
 
 ---
 
+PROHIBITED LANGUAGE — never use any of the following in any part of the article:
+- Em dash (—): use a regular hyphen surrounded by spaces ( - ) or rewrite the sentence
+- "delve" / "delves" / "delving"
+- "it's worth noting" / "it is worth noting"
+- "it's important to note" / "it is important to note"
+- "in conclusion" / "in summary" as section closers
+- "furthermore" / "moreover" / "additionally" as sentence openers
+- "leverage" / "leveraging" — write "use" or "apply" instead
+- "game-changer" / "game-changing"
+- "cutting-edge" — write "current", "modern", or be specific about the technology
+- "seamlessly" / "streamline" / "streamlines" as filler
+- "robust" / "comprehensive" / "innovative" / "innovation" as empty filler adjectives
+- "pivotal" / "crucial" / "vital" used without specific supporting data
+- "utilize" — write "use"
+- "certainly" / "absolutely" / "of course" as sentence openers
+- "needless to say" / "it goes without saying" / "rest assured"
+- "revolutionize" / "revolutionary" as filler
+
+---
+
 OUTPUT FORMAT:
 Output ONLY valid TypeScript — no prose, no markdown fences, no commentary.
 Start with: import type { Paper } from "../types";

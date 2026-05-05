@@ -37,6 +37,15 @@ HASHTAG POOL — North America articles (mix 3–5 from both pools above):
 Use a blend of Canadian and US hashtags that best fit the article's focus.
 
 REGION RULE: Match hashtags to the article's region. A Canadian article should not use #CollisionRepairUS as a primary tag, and a US article should not lead with #CanadianCollision.
+
+PROHIBITED LANGUAGE — never use any of the following:
+- Em dash (—): use a hyphen with spaces ( - ) or rewrite the sentence
+- "delve" / "leverage" / "leveraging" — write "use" or "apply"
+- "it's worth noting" / "it is worth noting" / "it's important to note"
+- "in conclusion" / "furthermore" / "moreover" as openers
+- "game-changer" / "cutting-edge" / "seamlessly" / "streamline"
+- "pivotal" / "utilize" / "robust" / "innovative" as filler
+- "certainly" / "absolutely" / "needless to say" / "rest assured"
 """
 
 
@@ -115,7 +124,9 @@ Rules:
         # Drop first line if it looks like a variant header
         if lines and lines[0].strip().upper().startswith("VARIANT"):
             lines = lines[1:]
-        cleaned.append("\n".join(lines).strip())
+        # Safety net: replace em dashes that slipped past the prompt prohibition
+        text = "\n".join(lines).strip().replace("—", " - ")
+        cleaned.append(text)
 
     return {
         "hook": cleaned[0] if len(cleaned) > 0 else "",

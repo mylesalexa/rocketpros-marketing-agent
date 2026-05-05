@@ -77,7 +77,10 @@ def _extract_typescript_from_response(text: str) -> str:
         else:
             lines = lines[1:]
         text = "\n".join(lines)
-    return text.strip()
+    text = text.strip()
+    # Safety net: replace em dashes that slipped past the prompt prohibition
+    text = text.replace("—", " - ")
+    return text
 
 
 def _extract_slug_from_typescript(ts_code: str) -> str | None:
