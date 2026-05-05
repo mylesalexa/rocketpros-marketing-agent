@@ -1684,7 +1684,9 @@ async function deleteArticle(slug, btn, isPublished) {{
   try {{
     const url = '/article/' + slug + (removeFromGithub ? '?remove_from_github=true' : '');
     const resp = await authedFetch(url, {{method: 'DELETE'}});
-    const data = await resp.json();
+    const text = await resp.text();
+    let data;
+    try {{ data = JSON.parse(text); }} catch(_) {{ throw new Error('Server error: ' + text.slice(0, 200)); }}
     if (data.success) {{
       const card = document.getElementById('card-' + slug);
       if (card) {{ card.style.opacity = '0'; card.style.transition = 'opacity .3s'; setTimeout(() => card.remove(), 300); }}
@@ -1710,7 +1712,9 @@ async function deleteLiveArticle(slug, btn) {{
   btn.disabled = true; btn.textContent = 'Removing...';
   try {{
     const resp = await authedFetch('/article/' + slug + '?remove_from_github=true', {{method: 'DELETE'}});
-    const data = await resp.json();
+    const text = await resp.text();
+    let data;
+    try {{ data = JSON.parse(text); }} catch(_) {{ throw new Error('Server error: ' + text.slice(0, 200)); }}
     if (data.success) {{
       const card = btn.closest('.card');
       if (card) {{ card.style.opacity = '0'; card.style.transition = 'opacity .3s'; setTimeout(() => card.remove(), 300); }}
@@ -2135,14 +2139,20 @@ def download_image(slug: str, _: dict = Depends(require_auth)):
 
 @app.post("/publish/{slug}")
 def publish(slug: str, _: dict = Depends(require_auth)):
-    result = publish_article(slug)
-    return JSONResponse(content=result)
+    try:
+        result = publish_article(slug)
+        return JSONResponse(content=result)
+    except Exception as exc:
+        return JSONResponse(status_code=500, content={"success": False, "message": str(exc)})
 
 
 @app.delete("/article/{slug}")
 def remove_article(slug: str, remove_from_github: bool = False, _: dict = Depends(require_auth)):
-    result = delete_article(slug, remove_from_github=remove_from_github)
-    return JSONResponse(content=result)
+    try:
+        result = delete_article(slug, remove_from_github=remove_from_github)
+        return JSONResponse(content=result)
+    except Exception as exc:
+        return JSONResponse(status_code=500, content={"success": False, "message": str(exc)})
 
 
 # ── NEW: Sync API ──────────────────────────────────────────────────────────────
