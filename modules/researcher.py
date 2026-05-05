@@ -221,6 +221,25 @@ def _discover_autonomous(n_topics: int) -> list[dict]:
     return unique_topics[:n_topics]
 
 
+def _direction_to_search_query(direction: str) -> str:
+    """
+    Distill a (potentially long, multi-line) direction into a short Brave Search
+    query. Brave rejects queries with newlines or over ~500 chars (422 error).
+    Strategy: take the first non-empty line, strip markdown, cap at 120 chars.
+    """
+    first_line = next(
+        (l.strip() for l in direction.splitlines() if l.strip()),
+        direction,
+    )
+    # Strip markdown bold/italic markers
+    import re as _re
+    first_line = _re.sub(r"\*+", "", first_line).strip()
+    # Cap length so Brave doesn't reject it
+    if len(first_line) > 120:
+        first_line = first_line[:120].rsplit(" ", 1)[0]
+    return first_line
+
+
 def _discover_from_direction(direction: str, n_topics: int) -> list[dict]:
     """
     Directed mode: search specifically for the user-provided direction,
@@ -228,12 +247,14 @@ def _discover_from_direction(direction: str, n_topics: int) -> list[dict]:
     """
     print(f"[researcher] Directed mode — focus: '{direction}'")
 
-    # Build 2–3 targeted queries from the direction
-    # Primary: exact direction; Secondary: Canada/MPI/SGI context added
+    # Distill direction into a short search query (full direction causes Brave 422)
+    base_query = _direction_to_search_query(direction)
+    print(f"[researcher] Search query: '{base_query}'")
+
     queries = [
-        direction,
-        f"{direction} MPI SGI Canada collision repair",
-        f"{direction} Canadian auto insurance accredited shop 2026",
+        base_query,
+        f"{base_query} MPI SGI Canada collision repair",
+        f"{base_query} Canadian auto insurance accredited shop 2026",
     ][:max(2, n_topics + 1)]
 
     raw_topics = []
