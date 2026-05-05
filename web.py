@@ -1647,7 +1647,11 @@ function appendLog(line) {{
   const div = document.createElement('div');
   div.className = 'log-line';
   let cls = 'log-text';
-  if (line.includes('ERROR') || line.includes('error')) cls += ' err';
+  // Mark as error only if the line signals an actual failure — not a "0 error(s)" summary line
+  const isActualError = (line.includes('ERROR') || line.toLowerCase().includes('error'))
+    && !/\b0 errors?\b/i.test(line)
+    && !/Pipeline complete/i.test(line);
+  if (isActualError) cls += ' err';
   else if (line.includes('STEP ') || line.includes('===')) cls += ' step';
   else if (line.includes('Done') || line.includes('complete') || line.includes('\\u2713')) cls += ' done';
   div.innerHTML = '<span class="' + cls + '">' + escHtml(line) + '</span>';
@@ -1657,10 +1661,10 @@ function appendLog(line) {{
 
 function _consoleHasErrors() {{
   const body = document.getElementById('console-body');
+  // .err class is only set on genuine error lines (not "0 error(s)" summaries)
   return body.querySelector('.err') !== null ||
-    body.textContent.includes('error(s)') ||
     body.textContent.includes('✗') ||
-    /[1-9]\d* error/i.test(body.textContent);
+    /[1-9]\d* errors?\b/i.test(body.textContent);
 }}
 
 function setDone(btn, success) {{
