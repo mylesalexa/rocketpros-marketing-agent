@@ -144,6 +144,7 @@ class ArticleEditRequest(BaseModel):
 
 class RenameRequest(BaseModel):
     new_title: str
+    new_slug: str = ""  # if provided, overrides the slug derived from new_title
 
 
 class RegenerateSectionRequest(BaseModel):
@@ -660,7 +661,8 @@ def _build_dashboard_html(articles: list[dict], current_user: dict | None = None
       <div class="field-group">
         <label class="field-label">Title</label>
         <input type="text" class="field-input title-input" id="e-title" oninput="onTitleChange(this.value)">
-        <div class="slug-display" id="e-slug-display"></div>
+        <label class="field-label" style="margin-top:8px;font-size:11px;color:#94a3b8;">URL Slug (editable)</label>
+        <input type="text" class="field-input" id="e-slug-input" style="font-family:monospace;font-size:13px;" oninput="onSlugChange(this.value)" placeholder="e.g. mpi-scanning-lvt-requirements">
       </div>
 
       <!-- Subtitle -->
@@ -830,6 +832,9 @@ function openEditor(slug, source) {{
   clearEditorBanner();
   document.getElementById('slug-warning').style.display = 'none';
   document.getElementById('slug-confirm-check').checked = false;
+  const slugInput = document.getElementById('e-slug-input');
+  slugInput.value = '';
+  delete slugInput.dataset.manualEdit;
   document.getElementById('modal-save-btn').disabled = false;
   document.getElementById('modal-publish-btn').disabled = false;
   document.getElementById('modal-title').textContent = 'Loading...';
@@ -866,9 +871,9 @@ function populateForm(paper) {{
   setVal('e-published', paper.published || '');
   setVal('e-abstract', paper.abstract || '');
 
-  const slugEl = document.getElementById('e-slug-display');
-  slugEl.textContent = 'slug: ' + (paper.slug || '');
-  slugEl.className = 'slug-display';
+  const slugInput = document.getElementById('e-slug-input');
+  slugInput.value = paper.slug || '';
+  slugInput.style.color = '';
 
   renderDynamicList('e-keyFindings-list', paper.keyFindings || [], 'keyFindings');
   renderDynamicList('e-shopImplications-list', paper.shopImplications || [], 'shopImplications');
@@ -885,18 +890,34 @@ function setVal(id, val) {{
 
 // ── Title / slug auto-update ──────────────────────────────────────────────────
 function onTitleChange(val) {{
-  const newSlug = titleToSlug(val);
-  const slugEl = document.getElementById('e-slug-display');
+  // Auto-fill slug from title, but only if user hasn't manually edited it
+  const slugInput = document.getElementById('e-slug-input');
+  if (!slugInput.dataset.manualEdit) {{
+    slugInput.value = titleToSlug(val);
+  }}
+  _updateSlugWarning(slugInput.value);
+}}
+
+function onSlugChange(val) {{
+  // Mark as manually edited so title changes no longer override it
+  const slugInput = document.getElementById('e-slug-input');
+  slugInput.dataset.manualEdit = '1';
+  // Sanitize: lowercase, hyphens only
+  const clean = val.toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '');
+  if (clean !== val) {{
+    slugInput.value = clean;
+  }}
+  _updateSlugWarning(clean);
+}}
+
+function _updateSlugWarning(newSlug) {{
   const warnEl = document.getElementById('slug-warning');
-  slugEl.textContent = 'slug: ' + newSlug;
   if (newSlug !== editorOrigSlug) {{
-    slugEl.className = 'slug-display changed';
     warnEl.style.display = 'block';
     document.getElementById('modal-save-btn').disabled = true;
     document.getElementById('modal-publish-btn').disabled = true;
     document.getElementById('slug-confirm-check').checked = false;
   }} else {{
-    slugEl.className = 'slug-display';
     warnEl.style.display = 'none';
     document.getElementById('modal-save-btn').disabled = false;
     document.getElementById('modal-publish-btn').disabled = false;
@@ -1181,9 +1202,7 @@ function collectSectionData() {{
 function collectForm() {{
   collectSectionData();
   return {{
-    slug: titleToSlug(document.getElementById('e-title').value) !== editorOrigSlug
-      ? titleToSlug(document.getElementById('e-title').value)
-      : editorOrigSlug,
+    slug: document.getElementById('e-slug-input').value.trim() || editorOrigSlug,
     title: document.getElementById('e-title').value,
     subtitle: document.getElementById('e-subtitle').value,
     category: document.getElementById('e-category').value,
@@ -1216,7 +1235,7 @@ async function saveArticle() {{
       const renameResp = await authedFetch('/api/article/' + editorOrigSlug + '/rename', {{
         method: 'POST',
         headers: {{'Content-Type': 'application/json'}},
-        body: JSON.stringify({{new_title: paper.title}}),
+        body: JSON.stringify({{new_title: paper.title, new_slug: newSlug}}),
       }});
       const renameData = await renameResp.json();
       if (!renameData.success) {{
@@ -1227,8 +1246,8 @@ async function saveArticle() {{
       editorOrigSlug = renameData.new_slug;
       paper.slug = renameData.new_slug;
       document.getElementById('slug-warning').style.display = 'none';
-      document.getElementById('e-slug-display').textContent = 'slug: ' + renameData.new_slug;
-      document.getElementById('e-slug-display').className = 'slug-display';
+      document.getElementById('e-slug-input').value = renameData.new_slug;
+      delete document.getElementById('e-slug-input').dataset.manualEdit;
     }}
 
     // Save the edited paper
@@ -2258,7 +2277,7 @@ def api_article_edit(slug: str, body: ArticleEditRequest, _: dict = Depends(requ
 def api_article_rename(slug: str, body: RenameRequest, _: dict = Depends(require_auth)):
     """Rename an article's slug + title + all associated files."""
     from modules.article_editor import rename_article
-    result = rename_article(slug, body.new_title, OUTPUT_DIR)
+    result = rename_article(slug, body.new_title, OUTPUT_DIR, new_slug=body.new_slug or None)
     return JSONResponse(result)
 
 

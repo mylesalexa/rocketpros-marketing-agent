@@ -50,11 +50,26 @@ def _slug_to_camel(slug: str) -> str:
     return parts[0] + "".join(p.capitalize() for p in parts[1:])
 
 
+_SLUG_STRIP_PREFIXES = re.compile(
+    r"^(create\s+(an?\s+)?article\s+(about|on|covering|regarding)\s*[:\-]?\s*"
+    r"|write\s+(an?\s+)?article\s+(about|on|covering)\s*[:\-]?\s*"
+    r"|article\s+(about|on|covering)\s*[:\-]?\s*"
+    r"|write\s+about\s*[:\-]?\s*"
+    r"|how\s+to\s*[:\-]?\s*"
+    r"|guide\s+to\s*[:\-]?\s*"
+    r"|topic\s*[:\-]?\s*)",
+    re.IGNORECASE,
+)
+
+
 def _generate_slug(title: str) -> str:
-    """Convert a title to a URL-safe slug, max 8 words."""
-    slug = title.lower()
-    # Remove subtitle if present (after colon)
+    """Convert a title to a URL-safe slug, max 8 words.
+    Strips common instructional prefixes that appear in editor topic fields.
+    """
+    slug = _SLUG_STRIP_PREFIXES.sub("", title).strip()
+    # Remove subtitle after colon
     slug = slug.split(":")[0].strip()
+    slug = slug.lower()
     slug = re.sub(r"[^a-z0-9\s-]", "", slug)
     slug = re.sub(r"\s+", "-", slug.strip())
     slug = re.sub(r"-+", "-", slug)
@@ -175,8 +190,8 @@ TOPIC: {topic_title}
 ANGLE: {topic_angle}
 PRIMARY AUDIENCE: {topic_audience}
 PUBLISHED DATE: {today}
-SUGGESTED SLUG: {suggested_slug}
-CAMELCASE EXPORT NAME: {camel_slug}
+SLUG GUIDANCE: derive the slug from the practitioner-facing title you write — NOT from this guidance string. Use only lowercase letters, numbers, and hyphens. Max 8 words. Example: "pre-post-repair-scanning-mpi-lvt" for an article titled "Pre- and Post-Repair Scanning on MPI Claims: What the LVT Requires and Why It Matters".
+CAMELCASE EXPORT NAME: derive from your slug (e.g. slug "pre-post-repair-scanning-mpi-lvt" → export name "prePostRepairScanningMpiLvt")
 SITE URL: {SITE_URL}{direction_context}{source_context}
 
 CRITICAL SCHEMA REQUIREMENTS — match types.ts exactly:

@@ -526,7 +526,7 @@ def update_article_fields(slug: str, fields: dict, output_dir: Path) -> dict:
         return {"success": False, "slug": slug, "message": f"Error updating article: {e}"}
 
 
-def rename_article(old_slug: str, new_title: str, output_dir: Path) -> dict:
+def rename_article(old_slug: str, new_title: str, output_dir: Path, new_slug: str | None = None) -> dict:
     """Rename an article's slug, title, and all associated files atomically."""
     ts_path = output_dir / "articles" / f"{old_slug}.ts"
     if not ts_path.exists():
@@ -537,7 +537,8 @@ def rename_article(old_slug: str, new_title: str, output_dir: Path) -> dict:
             "message": f"Article file not found: {ts_path}",
         }
 
-    new_slug = generate_slug(new_title)
+    # Use caller-supplied slug if provided (direct edit); otherwise derive from title
+    new_slug = new_slug.strip() if new_slug else generate_slug(new_title)
     if not new_slug:
         return {"success": False, "old_slug": old_slug, "new_slug": "", "message": "Could not derive a valid slug from the new title"}
 
