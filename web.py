@@ -1627,8 +1627,14 @@ function startStream(btn) {{
   pipelineES.onmessage = e => {{
     if (e.data === '__DONE__') {{
       pipelineES.close();
-      setDone(btn, true);
-      setTimeout(() => location.reload(), 3000);
+      const hasErrors = _consoleHasErrors();
+      setDone(btn, !hasErrors);
+      if (!hasErrors) {{
+        appendLog('\\u2713 Complete — reloading in 5 seconds...');
+        setTimeout(() => location.reload(), 5000);
+      }} else {{
+        appendLog('\\u26A0 Pipeline finished with errors — review output above. Page will NOT auto-reload.');
+      }}
       return;
     }}
     appendLog(e.data);
@@ -1649,14 +1655,21 @@ function appendLog(line) {{
   body.scrollTop = body.scrollHeight;
 }}
 
+function _consoleHasErrors() {{
+  const body = document.getElementById('console-body');
+  return body.querySelector('.err') !== null ||
+    body.textContent.includes('error(s)') ||
+    body.textContent.includes('✗') ||
+    /[1-9]\d* error/i.test(body.textContent);
+}}
+
 function setDone(btn, success) {{
   const status = document.getElementById('console-status');
   status.className = 'console-status ' + (success ? 'done' : 'error');
-  status.textContent = success ? 'Done' : 'Error';
+  status.textContent = success ? 'Done' : 'Done (errors)';
   btn.disabled = false;
   btn.textContent = '&#x26A1; Force Run Pipeline';
   btn.classList.remove('running');
-  if (success) appendLog('\\u2713 Complete — reloading in 3 seconds...');
 }}
 
 // ── Publish / delete (draft cards) ───────────────────────────────────────────
