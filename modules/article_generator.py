@@ -174,7 +174,7 @@ def generate_article(topic: dict) -> dict:
 
     # Region-aware citation guidance
     topic_lower = (topic_title + " " + topic_angle + " " + direction).lower()
-    if any(kw in topic_lower for kw in ["mpi", "sgi", "manitoba", "saskatchewan", "lvt", "light vehicle tariff"]):
+    if any(kw in topic_lower for kw in ["mpi", "sgi", "manitoba", "saskatchewan", "lvaa", "light vehicle accreditation"]):
         citation_guidance = """Include 7–12 citations from: MPI portal (mpi.mb.ca), SGI portal (sgi.sk.ca), provincial legislation (Manitoba Public Insurance Corporation Act / Saskatchewan Government Insurance Act), Insurance Bureau of Canada (ibc.ca), Statistics Canada Table 18-10-0004-01 (statcan.gc.ca), I-CAR RTS (rts.i-car.com), OEM1Stop.com, CCC Crash Course (cccis.com), Mitchell Industry Trends, CCIF, IIHS-HLDI.
 Set region: "Canada" in the Paper object."""
     elif any(kw in topic_lower for kw in ["state farm", "geico", "progressive", "allstate", "farmers", "us drp", "united states", "american", "usa"]):
@@ -190,7 +190,7 @@ TOPIC: {topic_title}
 ANGLE: {topic_angle}
 PRIMARY AUDIENCE: {topic_audience}
 PUBLISHED DATE: {today}
-SLUG GUIDANCE: derive the slug from the practitioner-facing title you write — NOT from this guidance string. Use only lowercase letters, numbers, and hyphens. Max 8 words. Example: "pre-post-repair-scanning-mpi-lvt" for an article titled "Pre- and Post-Repair Scanning on MPI Claims: What the LVT Requires and Why It Matters".
+SLUG GUIDANCE: derive the slug from the practitioner-facing title you write — NOT from this guidance string. Use only lowercase letters, numbers, and hyphens. Max 8 words. Example: "pre-post-repair-scanning-mpi-lvaa" for an article titled "Pre- and Post-Repair Scanning on MPI Claims: What the LVAA Requires and Why It Matters".
 CAMELCASE EXPORT NAME: derive from your slug (e.g. slug "pre-post-repair-scanning-mpi-lvt" → export name "prePostRepairScanningMpiLvt")
 SITE URL: {SITE_URL}{direction_context}{source_context}
 
@@ -202,7 +202,7 @@ CRITICAL SCHEMA REQUIREMENTS — match types.ts exactly:
 - import line: import type {{ Paper }} from "../types";  ← use "import type"
 
 TITLE: Write a specific, practitioner-facing title like existing RocketPros papers:
-  Good: "Pre- and Post-Repair Scanning on MPI Claims: What the LVT Requires and Why It Matters"
+  Good: "Pre- and Post-Repair Scanning on MPI Claims: What the LVAA Requires and Why It Matters"
   Bad: "{topic_title}"  ← too generic, rewrite it
 
 AUTHORS: Always use exactly these two:
