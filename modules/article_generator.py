@@ -27,6 +27,57 @@ import anthropic
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 SITE_URL = os.getenv("SITE_URL", "https://rocketpros.app")
 
+# Approved domains — mirrors APPROVED_DOMAINS in researcher.py.
+# Kept here so validation is self-contained without circular imports.
+_APPROVED_CITATION_DOMAINS = {
+    "i-car.com", "rts.i-car.com",
+    "scrs.com",
+    "asashop.org",
+    "collisionweek.com",
+    "repairerdrivennews.com",
+    "cccis.com",
+    "mitchell.com", "mitchellrepair.com",
+    "audatex.com", "solera.com",
+    "nhtsa.gov",
+    "tc.gc.ca",
+    "mpi.mb.ca",
+    "sgi.sk.ca",
+    "icbc.com",
+    "ibc.ca",
+    "ccif.ca",
+    "insuranceinstitute.ca",
+    "statcan.gc.ca",
+    "iihs.org",
+    "assuredperformance.net",
+    "bodyshopbusiness.com",
+    "autobodynews.com",
+    "insurancejournal.com",
+    "oem1stop.com",
+}
+
+# Generic AI filler phrases that indicate low-quality output.
+_SLOP_PHRASES = [
+    "in today's fast-paced",
+    "in the ever-evolving",
+    "it's no secret that",
+    "the landscape is changing",
+    "needless to say",
+    "at the end of the day",
+    "as we move forward",
+    "the collision repair industry is evolving",
+    "exciting times",
+    "we're excited to",
+    "proud to announce",
+    "it goes without saying",
+    "rest assured",
+    "in today's competitive",
+    "in a rapidly changing",
+    "the world of collision repair",
+    "in recent years, the industry has seen",
+]
+
+_CURRENT_YEAR = datetime.now().year
+
 SYSTEM_PROMPT_PATH = Path(__file__).parent.parent / "templates" / "system_prompt.txt"
 
 # Token budget: covers thinking + full article output.
@@ -165,8 +216,25 @@ def generate_article(topic: dict) -> dict:
 
     source_context = ""
     if source_urls:
-        source_context = "\n\nResearch sources found during topic discovery (reference for citations where relevant):\n"
-        source_context += "\n".join(f"- {url}" for url in source_urls[:5])
+        source_context = "\n\nResearch sources found during topic discovery (use these as citation anchors where relevant):\n"
+        for src in source_urls[:5]:
+            # source_urls may be plain strings (legacy) or dicts with trust metadata
+            if isinstance(src, dict):
+                url = src.get("url", "")
+                trusted = src.get("trusted", False)
+                recency = src.get("recency", "unknown")
+                trust_label = " [APPROVED SOURCE]" if trusted else ""
+                recency_label = " [RECENT]" if recency == "recent" else (" [DATED - use sparingly]" if recency == "dated" else "")
+                source_context += f"- {url}{trust_label}{recency_label}\n"
+            else:
+                source_context += f"- {src}\n"
+
+        # Warn the model if trusted sources are scarce
+        trusted_count = topic.get("trusted_source_count", None)
+        if trusted_count is not None and trusted_count == 0:
+            source_context += "\nNOTE: No approved-domain sources were found in search results for this topic. "
+            source_context += "If you cannot cite at least 3 credible sources from the approved list, "
+            source_context += "state 'Limited recent source material was available for this topic.' in the article."
 
     direction_context = ""
     if direction:
@@ -312,32 +380,44 @@ import type {{ Paper }} from "../types";"""
 
     slug = _extract_slug_from_typescript(ts_code) or suggested_slug
     title = _extract_title_from_typescript(ts_code) or topic_title
-    validation_errors = _validate_typescript_output(ts_code)
+    validation_errors, quality_flags = _validate_typescript_output(ts_code)
 
     if validation_errors:
         print(f"  [article_generator] Schema validation warnings:")
         for err in validation_errors:
             print(f"    - {err}")
 
+    if quality_flags:
+        print(f"  [article_generator] Quality flags:")
+        for flag in quality_flags:
+            print(f"    ⚠  {flag}")
+
     return {
         "ts_code": ts_code,
         "slug": slug,
         "title": title,
         "validation_errors": validation_errors,
+        "quality_flags": quality_flags,
         "truncation_errors": truncation_errors,
         "token_usage": token_usage,
         "topic": topic,
     }
 
 
-def _validate_typescript_output(ts_code: str) -> list[str]:
+def _validate_typescript_output(ts_code: str) -> tuple[list[str], list[str]]:
     """
     Regex-level validation of the generated TypeScript.
-    Checks for correct field names matching types.ts.
-    Returns list of warning strings.
+    Checks schema correctness, content minimums, anti-slop, and citation quality.
+
+    Returns:
+        (errors, quality_flags)
+        errors:        hard schema issues (wrong field names, missing required sections)
+        quality_flags: soft quality warnings surfaced in email digest
     """
     errors = []
+    quality_flags = []
 
+    # ── Schema checks ────────────────────────────────────────────────────────────
     if "import type { Paper }" not in ts_code and 'import type { Paper }' not in ts_code:
         if "import { Paper }" in ts_code:
             errors.append("Use 'import type { Paper }' not 'import { Paper }'")
@@ -347,7 +427,6 @@ def _validate_typescript_output(ts_code: str) -> list[str]:
     if "export const" not in ts_code:
         errors.append("Missing: export const <name>: Paper = {...}")
 
-    # Schema field name checks
     if re.search(r'\brole:\s*["\']', ts_code):
         errors.append("Author has 'role' field — should be 'title'")
 
@@ -363,7 +442,7 @@ def _validate_typescript_output(ts_code: str) -> list[str]:
     if re.search(r'citations.*?\btext:\s*["\']', ts_code, re.DOTALL):
         errors.append("Citation has 'text' field — should be 'label'")
 
-    # Content checks
+    # ── Content minimum checks ───────────────────────────────────────────────────
     table_count = len(re.findall(r'type:\s*["\']table["\']', ts_code))
     if table_count < 2:
         errors.append(f"Only {table_count} table(s) — need at least 2")
@@ -382,10 +461,60 @@ def _validate_typescript_output(ts_code: str) -> list[str]:
     if "RocketPros aligns" not in ts_code and "RocketPros align" not in ts_code:
         errors.append("Missing 'How RocketPros aligns' section")
 
-    if '"Canada"' not in ts_code and "'Canada'" not in ts_code:
-        errors.append("region must be 'Canada'")
+    # Region validation — all three valid values are acceptable
+    valid_regions = ['"Canada"', "'Canada'", '"United States"', "'United States'", '"North America"', "'North America'"]
+    if not any(r in ts_code for r in valid_regions):
+        errors.append("region field missing or not one of: Canada, United States, North America")
 
-    return errors
+    # ── Citation quality checks (quality flags, not hard errors) ─────────────────
+    citation_urls = re.findall(r'url:\s*["\']([^"\']+)["\']', ts_code)
+    citation_labels = re.findall(r'label:\s*["\']([^"\']+)["\']', ts_code)
+
+    # Check how many citations point to approved domains
+    approved_count = sum(1 for url in citation_urls if _is_trusted_citation_url(url))
+    if citation_urls and approved_count == 0:
+        quality_flags.append("QUALITY_WARN: no_approved_domain_citations — all citation URLs are from unknown sources")
+    elif citation_urls and approved_count < 3:
+        quality_flags.append(f"QUALITY_WARN: low_approved_citations — only {approved_count}/{len(citation_urls)} citations from approved domains")
+
+    # Check for currentness signal in citation labels
+    current_year_str = str(_CURRENT_YEAR)
+    prior_year_str = str(_CURRENT_YEAR - 1)
+    has_current_year = any(
+        current_year_str in label or prior_year_str in label
+        for label in citation_labels
+    )
+    if citation_labels and not has_current_year:
+        quality_flags.append(f"QUALITY_WARN: no_recent_sources — no citation labels reference {prior_year_str} or {current_year_str}")
+
+    # ── Anti-slop detection ──────────────────────────────────────────────────────
+    ts_lower = ts_code.lower()
+    slop_found = [phrase for phrase in _SLOP_PHRASES if phrase in ts_lower]
+    if len(slop_found) >= 2:
+        quality_flags.append(f"QUALITY_WARN: slop_phrases_detected — found {len(slop_found)} generic filler phrases: {slop_found[:3]}")
+    elif len(slop_found) == 1:
+        quality_flags.append(f"QUALITY_WARN: slop_phrase_detected — found generic filler: \"{slop_found[0]}\"")
+
+    # ── Fabrication guard — detect "according to FirstName LastName" patterns ─────
+    # These are flagged when the named person doesn't appear in any known source
+    quote_names = re.findall(r'according to ([A-Z][a-z]+ [A-Z][a-z]+)', ts_code)
+    known_authors = {"Myles Chaput", "Ali Jakvani"}
+    suspicious_quotes = [name for name in quote_names if name not in known_authors]
+    if suspicious_quotes:
+        quality_flags.append(
+            f"QUALITY_WARN: possible_hallucinated_quote — verify these named sources exist: {suspicious_quotes}"
+        )
+
+    return errors, quality_flags
+
+
+def _is_trusted_citation_url(url: str) -> bool:
+    """Check if a citation URL belongs to an approved high-authority domain."""
+    try:
+        host = url.lower().split("//")[-1].split("/")[0].lstrip("www.")
+        return any(host == d or host.endswith("." + d) for d in _APPROVED_CITATION_DOMAINS)
+    except Exception:
+        return False
 
 
 def save_article(article: dict, output_dir: Path) -> Path:

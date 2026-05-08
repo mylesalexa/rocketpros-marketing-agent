@@ -26,6 +26,7 @@ from modules.linkedin_generator import generate_linkedin_posts, save_linkedin_po
 from modules.image_generator import generate_image, save_image
 from modules.email_digest import send_digest
 from modules.deduplicator import add_paper_to_known
+from modules.citation_verifier import verify_citations, summarize_verification
 
 
 OUTPUT_DIR = Path(os.getenv("OUTPUT_DIR", "/output"))
@@ -102,6 +103,28 @@ def run_pipeline(dry_run: bool = False, direction: str = "") -> dict:
             results["errors"].append(error_msg)
             continue  # Skip to next topic
 
+        # Step 2.5: Citation Verification
+        print("\nSTEP 2.5: Citation Verification")
+        citation_verification = []
+        citation_summary = {}
+        try:
+            citation_verification = verify_citations(article["ts_code"])
+            citation_summary = summarize_verification(citation_verification)
+            article["citation_verification"] = citation_verification
+            article["citation_summary"] = citation_summary
+            if citation_summary.get("quality_flags"):
+                for flag in citation_summary["quality_flags"]:
+                    print(f"  ⚠  {flag}")
+                    results["errors"].append(flag)
+            else:
+                ok_count = citation_summary.get("ok", 0)
+                checked = citation_summary.get("checked", 0)
+                print(f"  ✓ {ok_count}/{checked} citation URLs verified reachable")
+        except Exception as e:
+            print(f"  [pipeline] Citation verification error (non-fatal): {e}")
+            article["citation_verification"] = []
+            article["citation_summary"] = {}
+
         # Step 3: LinkedIn Posts
         print("\nSTEP 3: LinkedIn Post Generation")
         try:
@@ -134,6 +157,8 @@ def run_pipeline(dry_run: bool = False, direction: str = "") -> dict:
             "slug": article["slug"],
             "title": article["title"],
             "validation_errors": article.get("validation_errors", []),
+            "quality_flags": article.get("quality_flags", []),
+            "citation_summary": article.get("citation_summary", {}),
             "token_usage": article.get("token_usage", {}),
         })
 

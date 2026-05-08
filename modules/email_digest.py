@@ -35,6 +35,8 @@ def _format_article_block(article: dict, linkedin_variants: dict, image_result: 
     slug = article.get("slug", "")
     ts_code = article.get("ts_code", "")
     validation_errors = article.get("validation_errors", [])
+    quality_flags = article.get("quality_flags", [])
+    citation_summary = article.get("citation_summary", {})
     topic = article.get("topic", {})
     audience = escape(topic.get("audience", "Collision Repair Shops + Insurers"))
 
@@ -56,13 +58,41 @@ def _format_article_block(article: dict, linkedin_variants: dict, image_result: 
     html += f'<span>⏱ {escape(read_time)} read</span>'
     html += f'</div>\n'
 
-    # Validation warnings
+    # Schema validation warnings
     if validation_errors:
         html += '  <div class="validation-warning">\n'
-        html += '    ⚠️ Validation warnings (review before publishing):<br>\n'
+        html += '    ⚠️ Schema validation warnings (review before publishing):<br>\n'
         for err in validation_errors:
             html += f'    &bull; {escape(err)}<br>\n'
         html += '  </div>\n'
+
+    # Quality flags (anti-slop, citation quality, currentness)
+    if quality_flags:
+        html += '  <div class="validation-warning">\n'
+        html += '    🔍 Content quality flags (review before publishing):<br>\n'
+        for flag in quality_flags:
+            html += f'    &bull; {escape(flag)}<br>\n'
+        html += '  </div>\n'
+
+    # Citation verification summary
+    if citation_summary:
+        dead = citation_summary.get("dead", 0)
+        untrusted = citation_summary.get("untrusted", 0)
+        ok = citation_summary.get("ok", 0)
+        checked = citation_summary.get("checked", 0)
+        if dead > 0 or untrusted > 0:
+            html += '  <div class="validation-warning">\n'
+            html += f'    🔗 Citation check: {ok}/{checked} OK'
+            if dead:
+                html += f', {dead} dead link(s)'
+            if untrusted:
+                html += f', {untrusted} from non-approved domain(s)'
+            html += '<br>\n'
+            for flag in citation_summary.get("quality_flags", []):
+                html += f'    &bull; {escape(flag)}<br>\n'
+            html += '  </div>\n'
+        else:
+            html += f'  <div class="citation-ok">✅ Citations: {ok}/{checked} verified reachable</div>\n'
 
     # Hero image (inline base64)
     if image_result and image_result.get("image_bytes"):

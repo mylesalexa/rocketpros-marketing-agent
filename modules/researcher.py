@@ -4,6 +4,7 @@ Returns ranked topic pitches ready for article generation.
 """
 
 import os
+import re
 import random
 import httpx
 from datetime import datetime
@@ -13,6 +14,43 @@ from modules.deduplicator import filter_topics
 
 BRAVE_API_KEY = os.getenv("BRAVE_API_KEY", "")
 BRAVE_SEARCH_URL = "https://api.search.brave.com/res/v1/web/search"
+
+# Approved high-authority collision repair / insurance sources.
+# Results from these domains are flagged as trusted and sorted to the top.
+APPROVED_DOMAINS = {
+    "i-car.com", "rts.i-car.com",
+    "scrs.com",
+    "asashop.org",
+    "collisionweek.com",
+    "repairerdrivennews.com",
+    "cccis.com",
+    "mitchell.com", "mitchellrepair.com",
+    "audatex.com", "solera.com",
+    "nhtsa.gov",
+    "tc.gc.ca",
+    "mpi.mb.ca",
+    "sgi.sk.ca",
+    "icbc.com",
+    "ibc.ca",
+    "ccif.ca",
+    "insuranceinstitute.ca",
+    "statcan.gc.ca",
+    "iihs.org",
+    "assuredperformance.net",
+    "bodyshopbusiness.com",
+    "autobodynews.com",
+    "insurancejournal.com",
+    "oem1stop.com",
+}
+
+# Month names for recency detection
+_MONTH_NAMES = (
+    "january", "february", "march", "april", "may", "june",
+    "july", "august", "september", "october", "november", "december",
+    "jan", "feb", "mar", "apr", "jun", "jul", "aug", "sep", "oct", "nov", "dec",
+)
+_CURRENT_YEAR = datetime.now().year
+_RECENT_YEARS = {str(_CURRENT_YEAR), str(_CURRENT_YEAR - 1)}
 
 # Topic categories organized by tier for balanced daily runs.
 # Each entry: (query_string, tier)
@@ -70,10 +108,40 @@ TOPIC_CATEGORIES = [q for q, _ in TOPIC_CATEGORIES_TIERED]
 QUERIES_PER_RUN = 6
 
 
+def _is_trusted_domain(url: str) -> bool:
+    """Return True if the URL belongs to an approved high-authority domain."""
+    try:
+        # Strip scheme and path to get just the hostname
+        host = url.lower().split("//")[-1].split("/")[0].lstrip("www.")
+        return any(host == d or host.endswith("." + d) for d in APPROVED_DOMAINS)
+    except Exception:
+        return False
+
+
+def _score_recency(text: str) -> str:
+    """
+    Scan a search result title/description for date signals.
+    Returns "recent" (current or prior year), "dated" (older year found), or "unknown".
+    """
+    text_lower = text.lower()
+    # Check for current/prior year — considered recent
+    for year in _RECENT_YEARS:
+        if year in text_lower:
+            return "recent"
+    # Check for older years 2015–2023
+    if re.search(r'\b20(1[5-9]|2[0-3])\b', text_lower):
+        return "dated"
+    # Month name present without a year = probably recent but uncertain
+    if any(m in text_lower for m in _MONTH_NAMES):
+        return "unknown"
+    return "unknown"
+
+
 def _brave_search(query: str, count: int = 5) -> list[dict]:
     """
     Execute a single Brave Search query.
-    Returns a list of result dicts with keys: title, url, description.
+    Returns a list of result dicts with keys: title, url, description, trusted, recency.
+    Results from APPROVED_DOMAINS are flagged trusted=True and sorted to the top.
     """
     if not BRAVE_API_KEY:
         raise RuntimeError("BRAVE_API_KEY environment variable is not set.")
@@ -101,11 +169,23 @@ def _brave_search(query: str, count: int = 5) -> list[dict]:
         results = []
         web_results = data.get("web", {}).get("results", [])
         for r in web_results:
+            url = r.get("url", "")
+            description = r.get("description", "")
+            title = r.get("title", "")
+            trusted = _is_trusted_domain(url)
+            recency = _score_recency(f"{title} {description}")
             results.append({
-                "title": r.get("title", ""),
-                "url": r.get("url", ""),
-                "description": r.get("description", ""),
+                "title": title,
+                "url": url,
+                "description": description,
+                "trusted": trusted,
+                "recency": recency,
             })
+
+        # Sort: trusted + recent first, then trusted, then the rest
+        results.sort(key=lambda r: (0 if (r["trusted"] and r["recency"] == "recent") else
+                                    1 if r["trusted"] else
+                                    2 if r["recency"] == "recent" else 3))
         return results
 
     except httpx.HTTPError as e:
@@ -132,12 +212,33 @@ def _build_topic_pitch(query: str, results: list[dict], direction: str = "") -> 
     elif any(kw in query.lower() for kw in ["adjuster", "insurer", "carrier", "mpi program", "sgi program"]):
         audience = "MPI/SGI Adjusters + Program Managers"
 
-    # Extract source URLs for potential citations
-    source_urls = [r["url"] for r in results if r.get("url")]
+    # Evaluate source quality
+    trusted_results = [r for r in results if r.get("trusted")]
+    recent_results = [r for r in results if r.get("recency") == "recent"]
+    trusted_count = len(trusted_results)
+
+    if trusted_count == 0:
+        print(f"  [researcher] ⚠  No trusted-domain results for query: '{query}' — article may rely on model memory")
+    elif trusted_count == 1:
+        print(f"  [researcher] ⚠  Only {trusted_count} trusted-domain result for query: '{query}'")
+    else:
+        print(f"  [researcher] ✓ {trusted_count} trusted-domain results, {len(recent_results)} recent")
+
+    # Include trust and recency metadata with each source URL so the article generator
+    # can prefer these when building citations
+    source_urls = []
+    for r in results:
+        if r.get("url"):
+            source_urls.append({
+                "url": r["url"],
+                "trusted": r.get("trusted", False),
+                "recency": r.get("recency", "unknown"),
+            })
 
     # Build angle — incorporate direction if provided
     angle_prefix = f"Directed focus: {direction}. " if direction else ""
-    angle = f"{angle_prefix}Data-driven analysis for Canadian shops and insurers: {descriptions[:200]}"
+    recency_note = " Sources include recent (current-year) industry data." if recent_results else " Limited recent source material was available — flag this in the article."
+    angle = f"{angle_prefix}Data-driven analysis for Canadian shops and insurers: {descriptions[:200]}{recency_note}"
 
     return {
         "query": query,
@@ -145,6 +246,8 @@ def _build_topic_pitch(query: str, results: list[dict], direction: str = "") -> 
         "angle": angle,
         "audience": audience,
         "source_urls": source_urls[:5],
+        "trusted_source_count": trusted_count,
+        "has_recent_sources": len(recent_results) > 0,
         "top_result_title": top_title,
         "direction": direction,
     }
