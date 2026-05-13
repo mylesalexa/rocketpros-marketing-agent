@@ -699,6 +699,13 @@ def _build_dashboard_html(articles: list[dict], current_user: dict | None = None
         </div>
       </div>
 
+      <!-- Authors -->
+      <div class="field-group">
+        <label class="field-label">Authors</label>
+        <div id="e-authors-list"></div>
+        <button onclick="addAuthor()" class="btn btn-secondary btn-sm" style="margin-top:6px;">+ Add Author</button>
+      </div>
+
       <!-- Abstract -->
       <div class="field-group">
         <label class="field-label">Abstract</label>
@@ -878,6 +885,7 @@ function populateForm(paper) {{
   renderDynamicList('e-keyFindings-list', paper.keyFindings || [], 'keyFindings');
   renderDynamicList('e-shopImplications-list', paper.shopImplications || [], 'shopImplications');
   renderDynamicList('e-carrierImplications-list', paper.carrierImplications || [], 'carrierImplications');
+  renderAuthorList(paper.authors && paper.authors.length ? paper.authors : DEFAULT_AUTHORS);
   renderFaqList(paper.faq || []);
   renderCitationList(paper.citations || []);
   renderSections();
@@ -987,6 +995,55 @@ function collectList(key) {{
   const container = document.getElementById('e-' + key + '-list');
   if (!container) return [];
   return Array.from(container.querySelectorAll('textarea')).map(t => t.value);
+}}
+
+// ── Authors ───────────────────────────────────────────────────────────────────
+const DEFAULT_AUTHORS = [
+  {{ name: "Myles Chaput", title: "Co-founder, RocketPros" }},
+  {{ name: "Ali Jakvani", title: "Co-founder, RocketPros" }},
+];
+
+function escHtml(s) {{
+  return String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;');
+}}
+
+function renderAuthorList(authors) {{
+  const container = document.getElementById('e-authors-list');
+  container.innerHTML = '';
+  authors.forEach((a, i) => {{
+    const row = document.createElement('div');
+    row.className = 'list-item';
+    row.style.cssText = 'display:flex;gap:8px;align-items:center;margin-bottom:6px;';
+    row.innerHTML = `
+      <input type="text" class="field-input" data-author-idx="${{i}}" data-author-field="name"
+             placeholder="Name" value="${{escHtml(a.name || '')}}" style="flex:1;">
+      <input type="text" class="field-input" data-author-idx="${{i}}" data-author-field="title"
+             placeholder="Title" value="${{escHtml(a.title || '')}}" style="flex:1.5;">
+      <button class="btn btn-delete btn-sm" onclick="removeAuthor(${{i}})">Remove</button>`;
+    container.appendChild(row);
+  }});
+}}
+
+function addAuthor() {{
+  const authors = collectAuthors();
+  authors.push({{ name: '', title: 'Co-founder, RocketPros' }});
+  renderAuthorList(authors);
+  const inputs = document.querySelectorAll('#e-authors-list [data-author-field="name"]');
+  if (inputs.length) inputs[inputs.length - 1].focus();
+}}
+
+function removeAuthor(idx) {{
+  const authors = collectAuthors();
+  authors.splice(idx, 1);
+  renderAuthorList(authors);
+}}
+
+function collectAuthors() {{
+  const rows = document.querySelectorAll('#e-authors-list .list-item');
+  return Array.from(rows).map(row => ({{
+    name: row.querySelector('[data-author-field="name"]').value.trim(),
+    title: row.querySelector('[data-author-field="title"]').value.trim(),
+  }}));
 }}
 
 // ── FAQ ───────────────────────────────────────────────────────────────────────
@@ -1211,6 +1268,7 @@ function collectForm() {{
     readTime: document.getElementById('e-readTime').value,
     published: document.getElementById('e-published').value,
     abstract: document.getElementById('e-abstract').value,
+    authors: collectAuthors(),
     keyFindings: collectList('keyFindings'),
     shopImplications: collectList('shopImplications'),
     carrierImplications: collectList('carrierImplications'),
